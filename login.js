@@ -172,7 +172,7 @@ function showLoginForm() {
     document.getElementById('setupForm').style.display = 'none';
     document.getElementById('loginForm').style.display = 'block';
     document.getElementById('backToLoginBtn').style.display = 'none';
-    document.querySelector('h1').textContent = 'InkPact Dashboard';
+    document.querySelector('h1').textContent = 'NurseMind';
     document.querySelector('.subtitle').textContent = 'Sign in to continue';
     
     // Clear setup form

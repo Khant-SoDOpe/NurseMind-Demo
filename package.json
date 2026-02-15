@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/inkPACTMM/dashboard.git"
+    "url": "git+https://github.com/Khant-SoDOpe/NurseMind-Demo.git"
   },
   "bugs": {
-    "url": "https://github.com/inkPACTMM/dashboard/issues"
+    "url": "https://github.com/Khant-SoDOpe/NurseMind-Demo/issues"
   },
-  "homepage": "https://github.com/inkPACTMM/dashboard#readme",
+  "homepage": "https://github.com/Khant-SoDOpe/NurseMind-Demo#readme",
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.9.0",
