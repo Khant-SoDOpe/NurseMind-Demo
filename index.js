@@ -3050,7 +3050,7 @@ async function toggleVoiceLive() {
                     if (voiceLiveState.isListening) {
                         status.textContent = 'Listening... speak now';
                     }
-                },3000); // 2-second delay before AI responds
+                },1500); // 1.5-second delay before AI responds
             }
         };
 

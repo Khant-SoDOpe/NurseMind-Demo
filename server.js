@@ -1396,13 +1396,13 @@ app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res
             // Group answers by question
             const sortedMsgs = messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
             const qaPairs = [];
-            let currentQuestion = null;
-            let currentCorrectAnswer = null;
+            let currentQuestion = assessmentVideos[0]?.question || 'Assessment Question';
+            let currentCorrectAnswer = assessmentVideos[0]?.correctAnswer || null;
             let currentAnswers = [];
 
             for (const m of sortedMsgs) {
                 if (m.type === 'video_shown') {
-                    if (currentQuestion && currentAnswers.length > 0) {
+                    if (currentAnswers.length > 0) {
                         qaPairs.push({ question: currentQuestion, correctAnswer: currentCorrectAnswer, answers: currentAnswers });
                     }
                     const vi = m.videoIndex !== undefined ? m.videoIndex : 0;
@@ -1420,7 +1420,6 @@ app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res
             }
             // Push last group
             if (currentAnswers.length > 0) {
-                if (!currentQuestion) currentQuestion = 'Assessment Question';
                 qaPairs.push({ question: currentQuestion, correctAnswer: currentCorrectAnswer, answers: currentAnswers });
             }
 
@@ -1435,7 +1434,7 @@ app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res
                 return block;
             }).join('\n\n');
 
-            const prompt = `You are a strict assessment grader. Grade the following student answers.
+            const prompt = `You are a strict assessment grader. Grade the following student answers. Answers can be both thai and english.
 Today's date: ${new Date().toISOString().split('T')[0]}
 
 Assessment: ${assessment.name}
@@ -1447,6 +1446,7 @@ ${qaText}
 For each question, assign a score from 0 to ${marksPerQuestion} (you can use increments of 0.5).
 
 GRADING RULES (follow strictly):
+
 1. CORRECTNESS is the HIGHEST priority. The correct answer / key points provided are the PRIMARY basis for grading.
 2. A short but completely correct answer MUST receive full marks. Do NOT reward length.
 3. A long answer with unnecessary details but partially incorrect content MUST lose marks. Penalize factual errors — even if the explanation is detailed, incorrect information must reduce the score.
