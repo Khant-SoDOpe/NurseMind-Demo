@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - InkPact Dashboard</title>
+    <link rel="stylesheet" href="login.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <div class="logo">
+                <img src="logo.png" alt="InkPact Logo" class="logo-image">
+            </div>
+            
+            <h1>InkPact Dashboard</h1>
+            <p class="subtitle">Sign in to continue</p>
+
+            <!-- Login Form -->
+            <form id="loginForm" style="display: block;">
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" required autocomplete="email" placeholder="your@email.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="••••••••">
+                </div>
+
+                <div id="loginError" class="error-message"></div>
+
+                <button type="submit" class="btn-primary" id="loginBtn">
+                    <span class="btn-text">Sign In</span>
+                    <span class="btn-loading" style="display: none;">Signing in...</span>
+                </button>
+            </form>
+
+            <!-- First Time Setup Form -->
+            <form id="setupForm" style="display: none;">
+                <p class="info-message">
+                    👋 Welcome! Create your first admin account to get started.
+                </p>
+
+                <div class="form-group">
+                    <label for="setupName">Full Name</label>
+                    <input type="text" id="setupName" name="name" required placeholder="John Doe">
+                </div>
+
+                <div class="form-group">
+                    <label for="setupEmail">Email</label>
+                    <input type="email" id="setupEmail" name="email" required placeholder="admin@example.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="setupPassword">Password</label>
+                    <input type="password" id="setupPassword" name="password" required placeholder="At least 6 characters">
+                    <small>Minimum 6 characters</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="setupPasswordConfirm">Confirm Password</label>
+                    <input type="password" id="setupPasswordConfirm" name="passwordConfirm" required placeholder="Re-enter password">
+                </div>
+
+                <div id="setupError" class="error-message"></div>
+
+                <button type="submit" class="btn-primary" id="setupBtn">
+                    <span class="btn-text">Create Admin Account</span>
+                    <span class="btn-loading" style="display: none;">Creating...</span>
+                </button>
+
+                <button type="button" class="btn-secondary" id="backToLoginBtn" style="display: none;">
+                    Back to Login
+                </button>
+            </form>
+
+            <div class="login-footer">
+                <p>Need help? Contact your administrator</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="login.js"></script>
+</body>
+</html>

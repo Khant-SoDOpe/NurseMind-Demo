@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assessment Video Creator Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="index.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container-fluid px-4">
+            <div class="header-content">
+                <button class="btn btn-sm btn-outline-secondary me-2 sidebar-toggle-btn" id="sidebarToggleBtn" title="Toggle sidebar">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="header-icon">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <h1 class="dashboard-header-title mb-0">
+                    <span class="brand-name">Assessment</span><span class="brand-separator">&nbsp;</span><span class="page-name">Video Creator</span>
+                </h1>
+            </div>
+            <div class="header-user-bar" id="headerUserBar" style="display:none;">
+                <span class="header-user-name" id="headerUserName"></span>
+                <button class="btn btn-sm btn-outline-danger header-logout-btn" id="headerLogoutBtn" title="Logout">
+                    <i class="fas fa-sign-out-alt me-1"></i>Logout
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid dashboard-container">
+        <div class="row justify-content-center">
+            <!-- Sidebar -->
+            <div class="col-lg-3 sidebar-column" id="sidebarColumn">
+                <div class="dashboard-sidebar">
+                    <h4 class="mb-3">
+                        <i class="fas fa-tachometer-alt me-2 text-primary"></i>
+                        Dashboard
+                    </h4>
+                    <nav class="nav nav-pills flex-column">
+                        <a class="nav-link active" href="#" data-section="home">
+                            <i class="fas fa-home me-2"></i>Home
+                        </a>
+                        <a class="nav-link" href="#" data-section="assessment" data-admin-only>
+                            <i class="fas fa-video me-2"></i>Assessment Video Creator
+                        </a>
+                        <a class="nav-link" href="#" data-section="videos" data-admin-only>
+                            <i class="fas fa-film me-2"></i>Video Library
+                        </a>
+                        <a class="nav-link" href="#" data-section="assessments" data-admin-only>
+                            <i class="fas fa-clipboard-list me-2"></i>Assessments
+                        </a>
+                        <!-- NOTE: content-area, videos-section, assessments-section, students-section
+                             also have data-admin-only so they stay hidden for students -->
+                        <a class="nav-link" href="#" data-section="answer-assessment">
+                            <i class="fas fa-comments me-2"></i>Answer Assessment
+                        </a>
+                        <a class="nav-link" href="#" data-section="assessment-board">
+                            <i class="fas fa-table me-2"></i>Assessment Board
+                        </a>
+                        <a class="nav-link" href="#" data-section="voice-live">
+                            <i class="fas fa-microphone-alt me-2"></i>Voice Live
+                        </a>
+                        <a class="nav-link" href="#" data-section="students" data-admin-only>
+                            <i class="fas fa-user-graduate me-2"></i>Students
+                        </a>
+                    </nav>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-lg-9 main-column" id="mainColumn">
+                <div class="dashboard-content">
+                    <!-- Home Section -->
+                    <div id="home-section">
+                        <div class="mb-4">
+                            <h3><i class="fas fa-home me-2 text-primary"></i>Home</h3>
+                            <p class="text-muted">Overview of your assessments and activity.</p>
+                        </div>
+
+                        <!-- Stats Cards -->
+                        <div class="row g-3 mb-4" id="homeStatsRow">
+                            <div class="col-6 col-md-3">
+                                <div class="home-stat-card">
+                                    <div class="home-stat-icon bg-primary-subtle text-primary"><i class="fas fa-clipboard-list"></i></div>
+                                    <div class="home-stat-value" id="homeTotalAssessments">-</div>
+                                    <div class="home-stat-label">Total Assessments</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="home-stat-card">
+                                    <div class="home-stat-icon bg-warning-subtle text-warning"><i class="fas fa-clock"></i></div>
+                                    <div class="home-stat-value" id="homeUpcoming">-</div>
+                                    <div class="home-stat-label">Upcoming</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="home-stat-card">
+                                    <div class="home-stat-icon bg-danger-subtle text-danger"><i class="fas fa-lock"></i></div>
+                                    <div class="home-stat-value" id="homeExpired">-</div>
+                                    <div class="home-stat-label">Expired</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="home-stat-card">
+                                    <div class="home-stat-icon bg-success-subtle text-success"><i class="fas fa-check-circle"></i></div>
+                                    <div class="home-stat-value" id="homeCompleted">-</div>
+                                    <div class="home-stat-label">Completed</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Upcoming Deadlines -->
+                        <div class="home-panel mb-4">
+                            <div class="home-panel-header">
+                                <i class="fas fa-calendar-alt me-2 text-warning"></i>Upcoming Deadlines
+                            </div>
+                            <div id="homeUpcomingList" class="home-panel-body">
+                                <div class="text-center text-muted py-3"><div class="spinner-border spinner-border-sm" role="status"></div> Loading...</div>
+                            </div>
+                        </div>
+
+                        <!-- Recent / Expired -->
+                        <div class="home-panel mb-4">
+                            <div class="home-panel-header">
+                                <i class="fas fa-history me-2 text-danger"></i>Expired Assessments
+                            </div>
+                            <div id="homeExpiredList" class="home-panel-body">
+                                <div class="text-center text-muted py-3"><div class="spinner-border spinner-border-sm" role="status"></div> Loading...</div>
+                            </div>
+                        </div>
+
+                        <!-- Finished Assessments -->
+                        <div class="home-panel mb-4">
+                            <div class="home-panel-header">
+                                <i class="fas fa-check-circle me-2 text-success"></i>Finished
+                            </div>
+                            <div id="homeFinishedList" class="home-panel-body">
+                                <div class="text-center text-muted py-3"><div class="spinner-border spinner-border-sm" role="status"></div> Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="content-area" style="display: none;">
+                        <!-- Assessment Form -->
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h3><i class="fas fa-video me-2 text-primary"></i>Assessment Video Creator</h3>
+                        </div>
+
+                        <form id="avatarForm" class="assessment-form">
+                            <!-- Text to Speak -->
+                            <div class="mb-4">
+                                <label for="avatarText" class="form-label">
+                                    <i class="fas fa-comment-dots me-1"></i> Text
+                                </label>
+                                <textarea class="form-control" id="avatarText" rows="3" 
+                                          placeholder="Enter text for the avatar to speak..." required></textarea>
+                            </div>
+
+                            <!-- Avatar Character -->
+                            <div class="row mb-4">
+                                <div class="col-md-6">
+                                    <label for="avatarCharacter" class="form-label">
+                                        <i class="fas fa-user me-1"></i> Avatar Character
+                                    </label>
+                                    <select class="form-select" id="avatarCharacter" required>
+                                        <option value="" disabled selected>Loading characters...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="avatarStyle" class="form-label">
+                                        <i class="fas fa-palette me-1"></i> Avatar Style
+                                    </label>
+                                    <select class="form-select" id="avatarStyle" required>
+                                        <option value="" disabled selected>Select character first</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Voice -->
+                            <div class="mb-4">
+                                <label for="avatarVoice" class="form-label">
+                                    <i class="fas fa-microphone me-1"></i> Voice
+                                </label>
+                                <select class="form-select" id="avatarVoice" required>
+                                    <option value="" disabled selected>Loading voices...</option>
+                                </select>
+                            </div>
+
+                            <!-- Background Toggle -->
+                            <div class="mb-4">
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input" type="checkbox" id="bgToggle">
+                                    <label class="form-check-label fw-semibold" for="bgToggle">
+                                        <i class="fas fa-image me-1"></i> Custom Background
+                                    </label>
+                                </div>
+
+                                <div id="bgSection" style="display: none;">
+                                    <!-- Custom URL input -->
+                                    <div class="mb-3">
+                                        <label for="bgUrl" class="form-label">Background Image URL</label>
+                                        <input type="url" class="form-control" id="bgUrl" 
+                                               placeholder="https://example.com/image.jpg">
+                                    </div>
+
+                                    <!-- Photo Library -->
+                                    <div class="mb-3">
+                                        <label class="form-label">Or choose from library:</label>
+                                        <div id="photoLibrary" class="photo-library-grid">
+                                            <!-- Photos loaded dynamically -->
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Output Filename -->
+                            <div class="mb-4">
+                                <label for="outputFilename" class="form-label">
+                                    <i class="fas fa-file-signature me-1"></i> Output File Name
+                                </label>
+                                <input type="text" class="form-control" id="outputFilename" 
+                                       placeholder="e.g. my-avatar-video (optional)">
+                                <div class="form-text">Optional. Name for the generated video file.</div>
+                            </div>
+
+                            <!-- Submit -->
+                            <div class="d-flex gap-3">
+                                <button type="submit" class="btn btn-primary btn-lg flex-grow-1" id="submitBtn">
+                                    <i class="fas fa-paper-plane me-1"></i> Generate Avatar
+                                </button>
+                            </div>
+                        </form>
+
+                        <!-- Result Area -->
+                        <div id="resultArea" class="mt-4" style="display: none;"></div>
+                    </div>
+
+                    <!-- Assessments Section -->
+                    <div id="assessments-section" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h3><i class="fas fa-clipboard-list me-2 text-primary"></i>Assessments</h3>
+                            <button class="btn btn-primary btn-sm" id="newAssessmentBtn">
+                                <i class="fas fa-plus me-1"></i> New Assessment
+                            </button>
+                        </div>
+
+                        <!-- New / Edit Assessment Form -->
+                        <div id="assessmentFormCard" class="card mb-4" style="display: none;">
+                            <div class="card-header bg-light fw-semibold">
+                                <i class="fas fa-edit me-1"></i> <span id="assessmentFormTitle">New Assessment</span>
+                            </div>
+                            <div class="card-body">
+                                <input type="hidden" id="assessmentEditId">
+                                <div class="mb-3">
+                                    <label for="assessmentName" class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="assessmentName" placeholder="Assessment name" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="assessmentDesc" class="form-label fw-semibold">Description</label>
+                                    <textarea class="form-control" id="assessmentDesc" rows="3" placeholder="Describe this assessment..."></textarea>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="assessmentDeadline" class="form-label fw-semibold"><i class="fas fa-calendar-clock me-1"></i> Deadline</label>
+                                    <input type="datetime-local" class="form-control" id="assessmentDeadline">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="assessmentFullMarks" class="form-label fw-semibold"><i class="fas fa-star me-1"></i> Full Marks</label>
+                                    <input type="number" class="form-control" id="assessmentFullMarks" placeholder="e.g. 100" min="0">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label fw-semibold"><i class="fas fa-film me-1"></i> Attach Videos</label>
+                                    <div id="assessmentVideoAttach">
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="pickVideoBtn">
+                                            <i class="fas fa-plus me-1"></i> Add Video from Library
+                                        </button>
+                                        <div id="attachedVideosPreview" class="mt-2"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-primary" id="saveAssessmentBtn">
+                                        <i class="fas fa-save me-1"></i> Save
+                                    </button>
+                                    <button class="btn btn-outline-secondary" id="cancelAssessmentBtn">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Assessment List -->
+                        <div id="assessmentsLoading" class="text-center py-5">
+                            <div class="spinner-border text-primary" role="status"></div>
+                            <p class="mt-2 text-muted">Loading assessments...</p>
+                        </div>
+                        <div id="assessmentsList"></div>
+                        <div id="assessmentsEmpty" class="text-center py-5" style="display: none;">
+                            <i class="fas fa-clipboard-list fa-3x text-muted mb-3 d-block"></i>
+                            <p class="text-muted">No assessments yet. Create one to get started.</p>
+                        </div>
+                    </div>
+
+                    <!-- Answer Assessment Section -->
+                    <div id="answer-assessment-section" style="display: none;">
+                        <div class="mb-4">
+                            <h3><i class="fas fa-comments me-2 text-primary"></i>Answer Assessment</h3>
+                            <p class="text-muted">Choose an assessment, watch the video, then record your answer.</p>
+                        </div>
+
+                        <!-- Assessment Selector -->
+                        <div id="answerAssessmentPicker">
+                            <label class="form-label fw-semibold">Select an Assessment</label>
+                            <div id="answerAssessmentList" class="answer-assessment-list"></div>
+                            <div id="answerAssessmentLoading" class="text-center py-4">
+                                <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                                <span class="ms-2 text-muted">Loading assessments...</span>
+                            </div>
+                            <div id="answerAssessmentEmpty" class="text-center py-4" style="display: none;">
+                                <p class="text-muted mb-0">No assessments available. Create one in the Assessments section first.</p>
+                            </div>
+                        </div>
+
+                        <!-- Chat Area (shown after picking an assessment) -->
+                        <div id="answerChatArea" style="display: none;">
+                            <div class="answer-chat-header">
+                                <button class="btn btn-sm btn-outline-secondary me-3" id="backToAssessmentListBtn">
+                                    <i class="fas fa-arrow-left me-1"></i> Back
+                                </button>
+                                <div class="flex-grow-1">
+                                    <div class="fw-bold" id="chatAssessmentName"></div>
+                                    <div class="text-muted small" id="chatAssessmentDesc"></div>
+                                </div>
+                                <button class="btn btn-sm btn-outline-warning ms-2" id="retestBtn" title="Retest assessment">
+                                    <i class="fas fa-redo"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary ms-2" id="chatFullscreenBtn" title="Toggle fullscreen">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                            </div>
+
+                            <div class="answer-chat-messages" id="chatMessages">
+                                <!-- Messages rendered here -->
+                            </div>
+
+                            <!-- Live Transcript -->
+                            <div class="transcript-container" id="transcriptContainer" style="display: none;">
+                                <div class="transcript-label"><i class="fas fa-language me-1"></i>Thai Transcript</div>
+                                <div class="transcript-text empty" id="transcriptText">Listening...</div>
+                            </div>
+
+                            <!-- Text Input Bar -->
+                            <div class="answer-text-bar">
+                                <div class="d-flex align-items-center gap-2">
+                                    <input type="text" class="form-control form-control-sm" id="chatTextInput" 
+                                           placeholder="Type a message..." autocomplete="off">
+                                    <button class="btn btn-primary btn-sm rounded-pill px-3" id="sendTextBtn" title="Send text">
+                                        <i class="fas fa-paper-plane"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Voice Recorder Bar -->
+                            <div class="answer-recorder-bar">
+                                <div id="recorderIdle">
+                                    <button class="btn btn-danger btn-lg rounded-circle" id="startRecordBtn" title="Start Recording">
+                                        <i class="fas fa-microphone"></i>
+                                    </button>
+                                    <span class="ms-2 text-muted small">Tap to record your answer</span>
+                                </div>
+                                <div id="recorderActive" style="display: none;">
+                                    <div class="d-flex align-items-center gap-3">
+                                        <div class="recording-pulse"></div>
+                                        <span class="fw-semibold text-danger" id="recordingTimer">00:00</span>
+                                        <button class="btn btn-outline-danger btn-sm rounded-pill" id="stopRecordBtn">
+                                            <i class="fas fa-stop me-1"></i> Stop
+                                        </button>
+                                        <button class="btn btn-outline-secondary btn-sm rounded-pill" id="cancelRecordBtn">
+                                            <i class="fas fa-times me-1"></i> Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="recorderUploading" style="display: none;">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                                        <span class="text-muted">Uploading recording...</span>
+                                    </div>
+                                </div>
+                                <div id="recorderPreview" style="display: none;">
+                                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                                        <audio id="previewAudio" controls class="recorder-preview-audio"></audio>
+                                        <button class="btn btn-primary btn-sm rounded-pill" id="sendRecordBtn">
+                                            <i class="fas fa-paper-plane me-1"></i> Send
+                                        </button>
+                                        <button class="btn btn-outline-warning btn-sm rounded-pill" id="reRecordBtn">
+                                            <i class="fas fa-redo me-1"></i> Re-record
+                                        </button>
+                                        <button class="btn btn-outline-secondary btn-sm rounded-pill" id="discardRecordBtn">
+                                            <i class="fas fa-trash me-1"></i> Discard
+                                        </button>
+                                    </div>
+                                    <div id="previewTranscript" class="chat-transcript mt-2" style="display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Responses Viewer Modal -->
+                    <div id="responsesModal" class="responses-backdrop" style="display: none;">
+                        <div class="responses-dialog">
+                            <div class="responses-header">
+                                <h5 class="mb-0"><i class="fas fa-users me-2"></i>Student Responses</h5>
+                                <div class="ms-auto d-flex align-items-center gap-2">
+                                    <button class="btn btn-sm btn-warning" id="aiGradeBtn" onclick="aiGradeAssessment()" data-admin-only title="AI Auto-Grade">
+                                        <i class="fas fa-magic me-1"></i>AI Grade
+                                    </button>
+                                    <span class="badge bg-primary-subtle text-primary" id="responsesCount">0 students</span>
+                                    <button class="btn-close" id="closeResponsesBtn"></button>
+                                </div>
+                            </div>
+                            <div class="responses-assessment-name" id="responsesAssessmentName"></div>
+                            <div id="responsesLoading" class="text-center py-4">
+                                <div class="spinner-border text-primary" role="status"></div>
+                                <p class="mt-2 text-muted small">Loading responses...</p>
+                            </div>
+                            <div id="responsesEmpty" class="text-center py-4" style="display: none;">
+                                <i class="fas fa-inbox fa-2x text-muted mb-2 d-block"></i>
+                                <p class="text-muted mb-0">No student responses yet.</p>
+                            </div>
+                            <div id="responsesList" class="responses-list"></div>
+                        </div>
+                    </div>
+
+                    <!-- Video Picker Modal -->
+                    <div id="videoPickerModal" class="video-picker-backdrop" style="display: none;">
+                        <div class="video-picker-dialog">
+                            <div class="video-picker-header">
+                                <h5 class="mb-0"><i class="fas fa-film me-2"></i>Select a Video</h5>
+                                <button class="btn-close" id="closeVideoPickerBtn"></button>
+                            </div>
+                            <div id="videoPickerLoading" class="text-center py-4">
+                                <div class="spinner-border text-primary" role="status"></div>
+                            </div>
+                            <div id="videoPickerGrid" class="video-picker-grid"></div>
+                        </div>
+                    </div>
+
+                    <!-- Video Library Section -->
+                    <div id="videos-section" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h3><i class="fas fa-film me-2 text-primary"></i>Video Library</h3>
+                            <button class="btn btn-outline-primary btn-sm" id="refreshVideosBtn">
+                                <i class="fas fa-sync-alt me-1"></i> Refresh
+                            </button>
+                        </div>
+                        <div id="videosLoading" class="text-center py-5">
+                            <div class="spinner-border text-primary" role="status"></div>
+                            <p class="mt-2 text-muted">Loading videos...</p>
+                        </div>
+                        <div id="videosGrid" class="video-grid"></div>
+                        <div id="videosEmpty" class="text-center py-5" style="display: none;">
+                            <i class="fas fa-film fa-3x text-muted mb-3"></i>
+                            <p class="text-muted">No videos found in avatar_videos</p>
+                        </div>
+                    </div>
+
+                    <!-- Assessment Board Section -->
+                    <div id="assessment-board-section" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h3><i class="fas fa-table me-2 text-primary"></i>Assessment Board</h3>
+                        </div>
+
+                        <!-- Tab bar -->
+                        <ul class="nav nav-pills board-tabs mb-4" id="boardTabs">
+                            <li class="nav-item">
+                                <a class="nav-link active" href="#" onclick="switchBoardTab('student', this)">
+                                    <i class="fas fa-users me-1"></i>Student Board
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" onclick="switchBoardTab('competency', this)">
+                                    <i class="fas fa-clipboard-check me-1"></i>Competency Board
+                                </a>
+                            </li>
+                        </ul>
+
+                        <!-- Student Board (existing) -->
+                        <div id="studentBoardPanel">
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">Select Assessment</label>
+                                <select class="form-select" id="boardAssessmentSelect">
+                                    <option value="">-- Choose an assessment --</option>
+                                </select>
+                            </div>
+                            <div id="boardLoading" class="text-center py-4" style="display: none;">
+                                <div class="spinner-border text-primary" role="status"></div>
+                                <p class="mt-2 text-muted small">Loading board...</p>
+                            </div>
+                            <div id="boardEmpty" class="text-center py-4" style="display: none;">
+                                <i class="fas fa-inbox fa-2x text-muted mb-2 d-block"></i>
+                                <p class="text-muted mb-0">No responses yet for this assessment.</p>
+                            </div>
+                            <div id="boardTableWrapper" style="display: none;">
+                                <div class="board-summary-row" id="boardSummary"></div>
+                                <div class="table-responsive">
+                                    <table class="table table-hover board-table" id="boardTable">
+                                        <thead>
+                                            <tr>
+                                                <th>#</th>
+                                                <th>Name</th>
+                                                <th>Email</th>
+                                                <th>Status</th>
+                                                <th>Videos</th>
+                                                <th>Responses</th>
+                                                <th>Marks</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="boardTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Competency Board (new) -->
+                        <div id="competencyBoardPanel" style="display: none;">
+                            <!-- Student Selector -->
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-5">
+                                    <label class="form-label fw-semibold"><i class="fas fa-user-graduate me-1"></i>Select Student</label>
+                                    <select class="form-select" id="compStudentSelect" onchange="loadStudentCompetency()">
+                                        <option value="">-- Choose a student --</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-7 d-flex align-items-end gap-2">
+                                    <button class="btn btn-success btn-sm" onclick="saveStudentCompetency()" id="compSaveBtn" style="display: none;">
+                                        <i class="fas fa-save me-1"></i>Save
+                                    </button>
+                                    <button class="btn btn-outline-primary btn-sm" onclick="addCompetencyRow()" id="compAddRowBtn" style="display: none;">
+                                        <i class="fas fa-plus me-1"></i>Add Row
+                                    </button>
+                                    <span class="text-muted small ms-auto" id="compSaveStatus"></span>
+                                </div>
+                            </div>
+
+                            <!-- Empty state -->
+                            <div id="compEmpty" class="text-center py-5" style="display: none;">
+                                <i class="fas fa-clipboard-list fa-3x text-muted mb-3 d-block"></i>
+                                <p class="text-muted mb-2">No competency data for this student yet.</p>
+                                <button class="btn btn-primary btn-sm" onclick="initDefaultCompetency()">
+                                    <i class="fas fa-plus me-1"></i>Initialize Default Template
+                                </button>
+                            </div>
+
+                            <!-- Loaded content wrapper -->
+                            <div id="compContentWrapper" style="display: none;">
+                                <!-- Personnel Info Card (editable) -->
+                                <div class="comp-info-card mb-4">
+                                    <div class="comp-info-grid">
+                                        <div class="comp-info-item">
+                                            <span class="comp-info-label"><i class="fas fa-user-nurse me-1"></i>Personnel Type</span>
+                                            <input type="text" class="form-control form-control-sm comp-info-input" id="compPersonnelType" value="Level 1" onchange="markCompDirty()">
+                                        </div>
+                                        <div class="comp-info-item">
+                                            <span class="comp-info-label"><i class="fas fa-clock me-1"></i>Experience</span>
+                                            <input type="text" class="form-control form-control-sm comp-info-input" id="compLevel" value="0-1 year" onchange="markCompDirty()">
+                                        </div>
+                                        <div class="comp-info-item">
+                                            <span class="comp-info-label"><i class="fas fa-layer-group me-1"></i>Standard Level</span>
+                                            <input type="text" class="form-control form-control-sm comp-info-input" id="compStdLevel" value="Standard level" onchange="markCompDirty()">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Summary Stats -->
+                                <div class="comp-summary-row mb-4" id="compSummary"></div>
+
+                                <!-- Competency Table -->
+                                <div class="table-responsive">
+                                    <table class="table comp-table" id="compTable">
+                                        <thead>
+                                            <tr>
+                                                <th class="comp-th-num">#</th>
+                                                <th>Type</th>
+                                                <th>Competency</th>
+                                                <th class="text-center">Standard</th>
+                                                <th class="text-center">Self</th>
+                                                <th class="text-center">Leader</th>
+                                                <th class="text-center">Final</th>
+                                                <th class="text-center">Gap</th>
+                                                <th class="text-center" style="min-width: 120px;">Gap Level</th>
+                                                <th style="width: 40px;"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="compTableBody"></tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Gap Legend -->
+                                <div class="comp-legend mt-3">
+                                    <span class="comp-legend-title"><i class="fas fa-info-circle me-1"></i>Gap Legend:</span>
+                                    <span class="comp-legend-item"><span class="comp-gap-dot comp-gap-none"></span> 0 = Met</span>
+                                    <span class="comp-legend-item"><span class="comp-gap-dot comp-gap-low"></span> 1 = Slight</span>
+                                    <span class="comp-legend-item"><span class="comp-gap-dot comp-gap-mid"></span> 2 = Moderate</span>
+                                    <span class="comp-legend-item"><span class="comp-gap-dot comp-gap-high"></span> 3+ = Critical</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Students Section -->
+                    <div id="students-section" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h3><i class="fas fa-user-graduate me-2 text-primary"></i>Students</h3>
+                            <button class="btn btn-primary btn-sm" onclick="showAddStudentModal()">
+                                <i class="fas fa-plus me-1"></i>Add Student
+                            </button>
+                        </div>
+
+                        <!-- Student Stats -->
+                        <div class="row g-3 mb-4" id="studentStatsRow">
+                            <div class="col-6 col-md-3">
+                                <div class="home-stat-card">
+                                    <div class="home-stat-icon bg-primary-subtle text-primary"><i class="fas fa-users"></i></div>
+                                    <div class="home-stat-value" id="totalStudentCount">0</div>
+                                    <div class="home-stat-label">Total Students</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="home-stat-card">
+                                    <div class="home-stat-icon bg-success-subtle text-success"><i class="fas fa-user-check"></i></div>
+                                    <div class="home-stat-value" id="adminStudentCount">0</div>
+                                    <div class="home-stat-label">Admins</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Search -->
+                        <div class="mb-3">
+                            <div class="input-group">
+                                <span class="input-group-text bg-white"><i class="fas fa-search text-muted"></i></span>
+                                <input type="text" class="form-control" id="studentSearchInput" placeholder="Search by name, email or ID..." oninput="filterStudentList()">
+                            </div>
+                        </div>
+
+                        <!-- Student List -->
+                        <div class="student-list-table">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th style="width:50px">#</th>
+                                        <th>Name</th>
+                                        <th>Email</th>
+                                        <th>ID</th>
+                                        <th>Role</th>
+                                        <th style="width:50px">Created</th>
+                                        <th style="width:100px" class="text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="studentTableBody">
+                                    <tr><td colspan="7" class="text-center text-muted py-4">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Add/Edit Student Modal -->
+                    <div class="modal fade" id="studentModal" tabindex="-1">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title" id="studentModalTitle"><i class="fas fa-user-plus me-2"></i>Add Student</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <input type="hidden" id="studentEditId">
+                                    <div class="mb-3">
+                                        <label class="form-label fw-semibold">Name <span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control" id="studentNameInput" placeholder="Enter full name">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label fw-semibold">Email <span class="text-danger">*</span></label>
+                                        <input type="email" class="form-control" id="studentEmailInput" placeholder="student@example.com">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label fw-semibold">Student ID</label>
+                                        <input type="text" class="form-control" id="studentIdInput" placeholder="e.g. STU-001">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label fw-semibold">Password <span class="text-danger">*</span></label>
+                                        <div class="input-group">
+                                            <input type="password" class="form-control" id="studentPasswordInput" placeholder="Min 6 characters">
+                                            <button class="btn btn-outline-secondary" type="button" onclick="toggleStudentPwdVisibility()">
+                                                <i class="fas fa-eye" id="studentPwdEyeIcon"></i>
+                                            </button>
+                                        </div>
+                                        <small class="text-muted" id="studentPwdHint">Required for new students</small>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label fw-semibold">Role</label>
+                                        <select class="form-select" id="studentRoleInput">
+                                            <option value="data-entry">Student</option>
+                                            <option value="super-admin">Admin</option>
+                                        </select>
+                                    </div>
+                                    <div class="alert alert-danger d-none" id="studentModalError"></div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                    <button type="button" class="btn btn-primary" id="studentSaveBtn" onclick="saveStudent()">
+                                        <i class="fas fa-save me-1"></i>Save
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Voice Live Section -->
+                    <div id="voice-live-section" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h3><i class="fas fa-microphone-alt me-2 text-primary"></i>Voice Live</h3>
+                            <!-- Avatar Toggle -->
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="avatarToggle" onchange="toggleAvatarMode()">
+                                <label class="form-check-label fw-semibold" for="avatarToggle">
+                                    <i class="fas fa-user-circle me-1"></i>Avatar
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Avatar Settings (hidden by default) -->
+                        <div id="avatarSettings" class="voice-topic-card mb-3" style="display: none;">
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-4">
+                                    <label class="form-label fw-semibold small mb-1">Character</label>
+                                    <select class="form-select form-select-sm" id="avatarLiveCharacter" onchange="updateAvatarLiveStyles()">
+                                        <option value="">Loading...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-semibold small mb-1">Style</label>
+                                    <select class="form-select form-select-sm" id="avatarLiveStyle">
+                                        <option value="">Select character first</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-sm btn-primary w-100" onclick="connectAvatar()">
+                                        <i class="fas fa-plug me-1"></i>Connect Avatar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Avatar Video Display -->
+                        <div id="avatarVideoWrapper" class="avatar-video-wrapper mb-3" style="display: none;">
+                            <video id="avatarVideo" autoplay playsinline></video>
+                            <audio id="avatarAudio" autoplay></audio>
+                            <div class="avatar-video-overlay" id="avatarOverlay">
+                                <div class="spinner-border text-light" role="status"></div>
+                                <p class="text-light mt-2 mb-0 small">Connecting avatar...</p>
+                            </div>
+                            <button class="btn btn-sm avatar-disconnect-btn" onclick="disconnectAvatar()" title="Disconnect avatar">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+
+                        <!-- Voice Gender Selection -->
+                        <div class="voice-topic-card mb-3">
+                            <label class="form-label fw-semibold">AI Voice</label>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-outline-primary voice-gender-btn active" id="voiceGenderBoy" onclick="setVoiceGender('boy')">
+                                    <i class="fas fa-male me-1"></i>Boy
+                                </button>
+                                <button class="btn btn-outline-pink voice-gender-btn" id="voiceGenderGirl" onclick="setVoiceGender('girl')">
+                                    <i class="fas fa-female me-1"></i>Girl
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Topic Input -->
+                        <div class="voice-topic-card mb-4">
+                            <label class="form-label fw-semibold">Discussion Topic</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="voiceTopic" placeholder="e.g. Cardiovascular system, Diabetes management...">
+                                <button class="btn btn-outline-primary" onclick="setVoiceTopic()" title="Set topic">
+                                    <i class="fas fa-check"></i>
+                                </button>
+                            </div>
+                            <small class="text-muted mt-1 d-block">Set a medical topic to focus the AI conversation</small>
+                        </div>
+
+                        <!-- Active Topic Banner -->
+                        <div id="voiceTopicBanner" class="voice-topic-banner mb-3" style="display: none;">
+                            <i class="fas fa-bookmark me-2"></i>
+                            <span id="voiceTopicText"></span>
+                            <button class="btn btn-sm btn-link text-danger ms-auto" onclick="clearVoiceTopic()" title="Clear topic">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+
+                        <!-- Conversation Area -->
+                        <div class="voice-conversation-area" id="voiceConversation">
+                            <div class="voice-empty-state" id="voiceEmptyState">
+                                <i class="fas fa-microphone-alt fa-3x text-muted mb-3"></i>
+                                <h5 class="text-muted">Ready to Talk</h5>
+                                <p class="text-muted small">Press the microphone button below to start speaking.<br>The AI will respond with voice.</p>
+                            </div>
+                        </div>
+
+                        <!-- Voice Controls -->
+                        <div class="voice-controls-bar">
+                            <button class="btn voice-btn-clear" onclick="clearVoiceConversation()" title="Clear conversation">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                            <button class="btn voice-btn-mic" id="voiceMicBtn" onclick="toggleVoiceLive()">
+                                <i class="fas fa-microphone" id="voiceMicIcon"></i>
+                            </button>
+                            <button class="btn voice-btn-stop-speak" id="voiceStopSpeakBtn" onclick="stopAISpeaking()" title="Stop AI speaking" style="display: none;">
+                                <i class="fas fa-volume-mute"></i>
+                            </button>
+                        </div>
+
+                        <!-- Status -->
+                        <div class="text-center mt-2">
+                            <small class="text-muted" id="voiceStatus">Click the microphone to start</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen Avatar Overlay -->
+    <div id="avatarFullscreen" class="avatar-fullscreen" style="display: none;">
+        <video id="avatarFullscreenVideo" class="avatar-fullscreen-video" autoplay playsinline></video>
+        <audio id="avatarFullscreenAudio" autoplay></audio>
+
+        <!-- Loading overlay -->
+        <div class="avatar-fullscreen-loading" id="avatarFullscreenLoading">
+            <div class="spinner-border text-light" role="status" style="width: 3rem; height: 3rem;"></div>
+            <p class="text-light mt-3 mb-0">Connecting to avatar...</p>
+        </div>
+
+        <!-- Topic display at top -->
+        <div class="avatar-fs-topic" id="avatarFsTopic" style="display: none;">
+            <i class="fas fa-bookmark me-2"></i><span id="avatarFsTopicText"></span>
+        </div>
+
+        <!-- Live transcript at top -->
+        <div class="avatar-fs-transcript" id="avatarFsTranscript" style="display: none;">
+            <span id="avatarFsTranscriptText"></span>
+        </div>
+
+        <!-- Subtitles at bottom (AI response) -->
+        <div class="avatar-fs-subtitles" id="avatarFsSubtitles" style="display: none;">
+            <span id="avatarFsSubtitleText"></span>
+        </div>
+
+        <!-- Floating controls -->
+        <div class="avatar-fs-controls">
+            <button class="avatar-fs-btn" id="avatarFsMicBtn" onclick="toggleAvatarFsMic()" title="Mute/Unmute Mic">
+                <i class="fas fa-microphone" id="avatarFsMicIcon"></i>
+                <span class="avatar-fs-btn-label">Mic</span>
+            </button>
+            <button class="avatar-fs-btn" id="avatarFsSpeakerBtn" onclick="toggleAvatarFsSpeaker()" title="Mute/Unmute Speaker">
+                <i class="fas fa-volume-up" id="avatarFsSpeakerIcon"></i>
+                <span class="avatar-fs-btn-label">Speaker</span>
+            </button>
+            <button class="avatar-fs-btn avatar-fs-btn-end" onclick="endAvatarCall()" title="End Call">
+                <i class="fas fa-phone-slash"></i>
+                <span class="avatar-fs-btn-label">End</span>
+            </button>
+        </div>
+    </div>
+
+    <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="index.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+node_modules
+.DS_Store
+*.log
+
+# Environment variables (contains API secrets)
+.env
+# Keep .env.example in git
+!.env.example
+
+# Local backup files
+*.backup.*
+*.bak
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
