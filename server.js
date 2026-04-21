@@ -8,6 +8,7 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
+const { RedisStore } = require('connect-redis');
 const cookieParser = require('cookie-parser');
 const { v2: cloudinary } = require('cloudinary');
 const { createClient } = require('redis');
@@ -80,7 +81,45 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 app.use(cookieParser());
+
+// Sessions — backed by Redis when REDIS_URL is set so logins survive restarts
+// and scale across instances. Falls back to MemoryStore otherwise (dev only).
+let sessionRedisClient = null;
+let sessionStore;
+if (REDIS_URL) {
+    sessionRedisClient = createClient({
+        url: REDIS_URL,
+        socket: {
+            connectTimeout: 10000,
+            reconnectStrategy: (retries) => {
+                if (retries > 10) return false;
+                return Math.min(retries * 500, 5000);
+            }
+        }
+    });
+    let firstSessionErrLogged = false;
+    sessionRedisClient.on('error', (err) => {
+        if (!firstSessionErrLogged) {
+            console.error('Session Redis error:', err.message);
+            firstSessionErrLogged = true;
+        }
+    });
+    sessionRedisClient.connect()
+        .then(() => console.log('✅ Connected to Redis (session store)'))
+        .catch((err) => {
+            console.error('❌ Session Redis connect failed:', err.message);
+            console.warn('⚠️  Sessions will use in-memory store — logins reset on restart.');
+        });
+
+    sessionStore = new RedisStore({
+        client: sessionRedisClient,
+        prefix: 'nurse-sess:',
+        ttl: 24 * 60 * 60 // seconds
+    });
+}
+
 app.use(session({
+    store: sessionStore, // undefined falls back to MemoryStore
     secret: SESSION_SECRET,
     name: 'nurse.sid',
     resave: false,
@@ -164,7 +203,281 @@ app.use((req, res, next) => {
 // ============================
 // Avatar API Proxies (voices & models)
 // ============================
+const { randomUUID } = require('crypto');
 const AVATAR_API_BASE = 'https://team-mooncalf.vercel.app';
+
+// ============================
+// Azure Batch Avatar Synthesis
+// Docs: https://learn.microsoft.com/azure/ai-services/speech-service/batch-synthesis-avatar
+// ============================
+function azureAvatarEndpoint() {
+    const region = process.env.AZURE_SPEECH_REGION;
+    const override = process.env.AZURE_AVATAR_ENDPOINT;
+    const base = (override || (region ? `https://${region}.api.cognitive.microsoft.com/` : ''))
+        .replace(/\/+$/, '') + '/';
+    return base;
+}
+
+function isAzureAvatarConfigured() {
+    return !!(process.env.AZURE_SPEECH_KEY && (process.env.AZURE_SPEECH_REGION || process.env.AZURE_AVATAR_ENDPOINT));
+}
+
+function isMooncalfConfigured() {
+    // Always "configured" — the upstream is public. Secret key is optional.
+    return true;
+}
+
+function resolveAvatarProvider() {
+    const explicit = (process.env.AVATAR_PROVIDER || 'auto').toLowerCase().trim();
+    if (explicit === 'azure' || explicit === 'mooncalf') return explicit;
+    return 'auto'; // tries azure first, then mooncalf
+}
+
+// Heuristic: does the supplied text look like SSML?
+const _SSML_HINT_RE = /<\s*(speak|voice|break|prosody|mstts:|audio)\b/i;
+function looksLikeSSML(text) {
+    const t = (text || '').trim();
+    return !!t && _SSML_HINT_RE.test(t);
+}
+
+// If the text is a partial SSML fragment (e.g. "สวัสดี <break time='500ms'/> ต่อไป"),
+// wrap it in a complete <speak><voice>...</voice></speak> envelope. Full SSML is
+// left untouched.
+function wrapSSMLIfNeeded(content, voice) {
+    const c = (content || '').trim();
+    if (!c) return c;
+    if (c.toLowerCase().includes('<speak')) return c;
+    const safeVoice = voice || 'th-TH-NiwatNeural';
+    const lang = /^th-/.test(safeVoice) ? 'th-TH'
+               : /^en-/.test(safeVoice) ? 'en-US'
+               : 'en-US';
+    return `<speak version="1.0" xml:lang="${lang}"><voice name="${safeVoice}">${c}</voice></speak>`;
+}
+
+async function azureSubmitAvatarJob({ text, voice, talkingAvatarCharacter, talkingAvatarStyle, background, videoFormat = 'mp4' }) {
+    if (!isAzureAvatarConfigured()) {
+        throw new Error('Azure Speech not configured (AZURE_SPEECH_KEY + AZURE_SPEECH_REGION required)');
+    }
+    const synthesisId = randomUUID();
+    const url = `${azureAvatarEndpoint()}avatar/batchsyntheses/${synthesisId}?api-version=2024-08-01`;
+
+    // Auto-detect SSML vs PlainText (parity with Python reference server).
+    const isSSML = looksLikeSSML(text);
+    const inputKind = isSSML ? 'SSML' : 'PlainText';
+    const content = isSSML ? wrapSSMLIfNeeded(text, voice) : text;
+
+    const avatarConfig = {
+        talkingAvatarCharacter,
+        talkingAvatarStyle,
+        customized: false,
+        videoFormat,
+        videoCodec: 'h264',
+        subtitleType: 'soft_embedded',
+        useBuiltInVoice: false
+    };
+    if (background) avatarConfig.backgroundImage = background;
+    else            avatarConfig.backgroundColor = '#FFFFFFFF';
+
+    const body = {
+        inputKind,
+        synthesisConfig: { voice },
+        customVoices: {},
+        inputs: [{ content }],
+        avatarConfig
+    };
+
+    const r = await fetch(url, {
+        method: 'PUT',
+        headers: {
+            'Ocp-Apim-Subscription-Key': process.env.AZURE_SPEECH_KEY,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+
+    if (!r.ok) {
+        const errText = await r.text().catch(() => '');
+        throw new Error(`Azure job creation failed [${r.status}]: ${errText.slice(0, 500)}`);
+    }
+    return { synthesisId, statusUrl: url, inputKind };
+}
+
+async function azurePollAvatarJob({ synthesisId, pollIntervalMs = 3000, timeoutMs = 5 * 60 * 1000, onStatus }) {
+    const url = `${azureAvatarEndpoint()}avatar/batchsyntheses/${synthesisId}?api-version=2024-08-01`;
+    const start = Date.now();
+    let lastStatus = null;
+
+    while (true) {
+        await sleep(pollIntervalMs);
+        const r = await fetch(url, {
+            headers: { 'Ocp-Apim-Subscription-Key': process.env.AZURE_SPEECH_KEY }
+        });
+        if (!r.ok) {
+            const errText = await r.text().catch(() => '');
+            throw new Error(`Azure status check failed [${r.status}]: ${errText.slice(0, 300)}`);
+        }
+        const data = await r.json();
+        if (data.status !== lastStatus) {
+            lastStatus = data.status;
+            if (onStatus) try { onStatus(data.status, data); } catch {}
+        }
+        if (data.status === 'Succeeded') return data;
+        if (data.status === 'Failed') {
+            const errMsg = data.properties?.error?.message
+                || JSON.stringify(data.properties?.error || {})
+                || 'Azure synthesis failed';
+            throw new Error(`Azure avatar synthesis failed: ${errMsg}`);
+        }
+        if (Date.now() - start > timeoutMs) {
+            throw new Error(`Azure avatar synthesis timed out after ${Math.round(timeoutMs / 1000)}s (last status: ${lastStatus || 'unknown'})`);
+        }
+    }
+}
+
+async function azureDeleteAvatarJob(synthesisId) {
+    try {
+        const url = `${azureAvatarEndpoint()}avatar/batchsyntheses/${synthesisId}?api-version=2024-08-01`;
+        await fetch(url, {
+            method: 'DELETE',
+            headers: { 'Ocp-Apim-Subscription-Key': process.env.AZURE_SPEECH_KEY }
+        });
+    } catch (e) { /* best-effort cleanup */ }
+}
+
+function sanitizeOutputFilename(name, fallback) {
+    if (!name) return fallback;
+    return name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_') || fallback;
+}
+
+async function generateAvatarViaAzure(payload, outputFilename) {
+    const { text, voice, talkingAvatarCharacter, talkingAvatarStyle, background } = payload;
+    if (!text || !voice || !talkingAvatarCharacter || !talkingAvatarStyle) {
+        throw new Error('Missing required fields: text, voice, talkingAvatarCharacter, talkingAvatarStyle');
+    }
+
+    const t0 = Date.now();
+    const { synthesisId, inputKind } = await azureSubmitAvatarJob({
+        text, voice, talkingAvatarCharacter, talkingAvatarStyle, background
+    });
+    console.log(`[avatar] Azure job submitted: ${synthesisId} (${inputKind})`);
+
+    const pollMs = parseInt(process.env.AVATAR_SYNTHESIS_POLL_MS, 10) || 3000;
+    const timeoutMs = parseInt(process.env.AVATAR_SYNTHESIS_TIMEOUT_MS, 10) || 5 * 60 * 1000;
+
+    const result = await azurePollAvatarJob({
+        synthesisId,
+        pollIntervalMs: pollMs,
+        timeoutMs,
+        onStatus: (status) => console.log(`[avatar] Azure ${synthesisId} → ${status}`)
+    });
+
+    const resultUrl = result.outputs?.result;
+    if (!resultUrl) throw new Error('Azure reported success but returned no result URL');
+
+    // Match the proven Python/mooncalf pattern: upload with `folder` only and
+    // let Cloudinary assign a public_id. This avoids the `folder + public_id`
+    // behavior difference between fixed-folder and dynamic-folder accounts.
+    // If the caller supplied a preferred filename, rename the asset afterwards
+    // (same two-step dance the existing mooncalf fallback uses).
+    let upload = await cloudinary.uploader.upload(resultUrl, {
+        resource_type: 'video',
+        folder: 'avatar_videos',
+        type: 'authenticated'
+    });
+
+    const safeName = sanitizeOutputFilename(outputFilename, null);
+    if (safeName) {
+        try {
+            const newPublicId = `avatar_videos/${safeName}`;
+            if (upload.public_id !== newPublicId) {
+                const renamed = await cloudinary.uploader.rename(upload.public_id, newPublicId, {
+                    resource_type: 'video',
+                    type: 'authenticated',
+                    overwrite: true
+                });
+                upload = { ...upload, ...renamed };
+                console.log(`[avatar] Renamed: ${upload.public_id}`);
+            }
+        } catch (renameErr) {
+            console.error('[avatar] Cloudinary rename failed:', renameErr.message);
+        }
+    }
+
+    // Best-effort cleanup of the Azure job record (the video URL from Azure
+    // expires in 48h anyway; we already copied it to Cloudinary).
+    azureDeleteAvatarJob(synthesisId);
+
+    return {
+        success: true,
+        provider: 'azure',
+        synthesisId,
+        inputKindUsed: inputKind,
+        outputFilename: safeName || upload.public_id.split('/').pop(),
+        publicId: upload.public_id,
+        // The video library endpoint returns signed URLs (type: authenticated);
+        // this one is here for convenience / debugging.
+        cloudinaryUrl: upload.secure_url,
+        video_url: upload.secure_url, // parity with Python response shape
+        durationSeconds: upload.duration,
+        width: upload.width,
+        height: upload.height,
+        format: upload.format,
+        bytes: upload.bytes,
+        elapsedMs: Date.now() - t0
+    };
+}
+
+async function generateAvatarViaMooncalf(payload, outputFilename) {
+    const forwardBody = { ...payload };
+    if (process.env.AVATAR_SECRET_KEY) forwardBody.key = process.env.AVATAR_SECRET_KEY;
+
+    const t0 = Date.now();
+    const response = await fetch(`${AVATAR_API_BASE}/generate-avatar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(forwardBody)
+    });
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+        const msg = data?.error || data?.message || `HTTP ${response.status}`;
+        throw new Error(`mooncalf: ${msg}`);
+    }
+
+    // mooncalf uploads the video into Cloudinary itself; if a preferred
+    // outputFilename was given, rename the latest uploaded video to match.
+    if (outputFilename) {
+        try {
+            const searchResult = await cloudinary.search
+                .expression('folder:avatar_videos AND resource_type:video')
+                .sort_by('created_at', 'desc')
+                .max_results(1)
+                .execute();
+
+            if (searchResult.resources?.length > 0) {
+                const latestVideo = searchResult.resources[0];
+                const oldPublicId = latestVideo.public_id;
+                const safeName = sanitizeOutputFilename(outputFilename, null);
+                if (safeName) {
+                    const newPublicId = `avatar_videos/${safeName}`;
+                    if (oldPublicId !== newPublicId) {
+                        await cloudinary.uploader.rename(oldPublicId, newPublicId, {
+                            resource_type: 'video',
+                            type: 'authenticated',
+                            overwrite: true
+                        });
+                        if (data) data.renamedTo = safeName;
+                    }
+                }
+            }
+        } catch (renameErr) {
+            console.error('[avatar] Cloudinary rename failed:', renameErr.message);
+            if (data) data.renameError = renameErr.message;
+        }
+    }
+
+    return { ...(data || {}), provider: 'mooncalf', elapsedMs: Date.now() - t0 };
+}
 
 app.get('/api/avatar/voices', async (req, res) => {
     try {
@@ -188,66 +501,107 @@ app.get('/api/avatar/models', async (req, res) => {
     }
 });
 
-const GENERATE_AVATAR_API = 'https://team-mooncalf.vercel.app/generate-avatar';
-
 app.post('/api/avatar/generate', async (req, res) => {
-    try {
-        const outputFilename = req.body.outputFilename;
-        // Don't forward outputFilename to the external API (it doesn't use it)
-        const forwardBody = { ...req.body };
-        delete forwardBody.outputFilename;
+    const outputFilename = req.body?.outputFilename;
+    const payload = { ...(req.body || {}) };
+    delete payload.outputFilename;
 
-        // Inject secret key from environment
-        if (process.env.AVATAR_SECRET_KEY) {
-            forwardBody.key = process.env.AVATAR_SECRET_KEY;
-        }
+    // Optional per-request override: { provider: 'azure' | 'mooncalf' }
+    const requested = (req.body?.provider || '').toLowerCase();
+    const perRequest = requested === 'azure' || requested === 'mooncalf' ? requested : null;
+    const configured = resolveAvatarProvider(); // 'azure' | 'mooncalf' | 'auto'
+    const mode = perRequest || configured;
 
-        const response = await fetch(GENERATE_AVATAR_API, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(forwardBody),
-        });
-        const data = await response.json().catch(() => null);
-
-        // If successful and outputFilename provided, rename the video in Cloudinary
-        if (response.ok && data && outputFilename) {
-            try {
-                // Find the most recently uploaded video in avatar_videos
-                const searchResult = await cloudinary.search
-                    .expression('folder:avatar_videos AND resource_type:video')
-                    .sort_by('created_at', 'desc')
-                    .max_results(1)
-                    .execute();
-
-                if (searchResult.resources && searchResult.resources.length > 0) {
-                    const latestVideo = searchResult.resources[0];
-                    const oldPublicId = latestVideo.public_id;
-                    // Sanitize the filename: remove extension, keep only safe chars
-                    const safeName = outputFilename.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-                    const newPublicId = `avatar_videos/${safeName}`;
-
-                    if (oldPublicId !== newPublicId) {
-                        await cloudinary.uploader.rename(oldPublicId, newPublicId, {
-                            resource_type: 'video',
-                            type: 'authenticated',
-                            overwrite: true
-                        });
-                        console.log(`✅ Renamed video: ${oldPublicId} → ${newPublicId}`);
-                        if (data) data.renamedTo = safeName;
-                    }
-                }
-            } catch (renameErr) {
-                console.error('Failed to rename video:', renameErr.message);
-                // Don't fail the whole request, just note the rename error
-                if (data) data.renameError = renameErr.message;
-            }
-        }
-
-        res.status(response.status).json(data);
-    } catch (err) {
-        console.error('Failed to proxy generate-avatar:', err.message);
-        res.status(502).json({ error: 'Failed to reach avatar generation server. Make sure it is running at ' + GENERATE_AVATAR_API });
+    // Build the attempt order.
+    const order = [];
+    if (mode === 'azure') order.push('azure');
+    else if (mode === 'mooncalf') order.push('mooncalf');
+    else {
+        if (isAzureAvatarConfigured()) order.push('azure');
+        order.push('mooncalf');
     }
+
+    const attempts = [];
+    for (const p of order) {
+        try {
+            const result = p === 'azure'
+                ? await generateAvatarViaAzure(payload, outputFilename)
+                : await generateAvatarViaMooncalf(payload, outputFilename);
+            return res.json({ ...result, attempts: [...attempts, { provider: p, ok: true }] });
+        } catch (err) {
+            const msg = err?.message || String(err);
+            console.error(`[avatar/generate] ${p} failed: ${msg}`);
+            attempts.push({ provider: p, ok: false, error: msg });
+            // If the caller pinned a provider, don't fall through.
+            if (perRequest || mode !== 'auto') break;
+        }
+    }
+
+    res.status(502).json({
+        success: false,
+        error: 'Avatar generation failed',
+        attempts
+    });
+});
+
+// Probe: are the avatar providers reachable and keys valid?
+app.get('/api/avatar/test', requireAuth, async (req, res) => {
+    const out = {
+        success: true,
+        provider: resolveAvatarProvider(),
+        azure: {
+            configured: isAzureAvatarConfigured(),
+            region: process.env.AZURE_SPEECH_REGION || null,
+            endpoint: azureAvatarEndpoint() || null,
+            valid: null,
+            statusCode: null,
+            error: null
+        },
+        mooncalf: {
+            configured: isMooncalfConfigured(),
+            url: AVATAR_API_BASE,
+            valid: null,
+            statusCode: null,
+            error: null
+        }
+    };
+
+    // Probe Azure: list batch syntheses (cheap, requires valid key)
+    if (out.azure.configured) {
+        try {
+            const url = `${azureAvatarEndpoint()}avatar/batchsyntheses?api-version=2024-08-01&top=1`;
+            const r = await fetch(url, {
+                headers: { 'Ocp-Apim-Subscription-Key': process.env.AZURE_SPEECH_KEY }
+            });
+            out.azure.statusCode = r.status;
+            if (r.ok) {
+                out.azure.valid = true;
+            } else {
+                out.azure.valid = false;
+                const errText = await r.text().catch(() => '');
+                out.azure.error = errText.slice(0, 400);
+            }
+        } catch (err) {
+            out.azure.valid = false;
+            out.azure.error = err.message || String(err);
+        }
+    }
+
+    // Probe mooncalf: GET /voices (public, cheap)
+    try {
+        const r = await fetch(`${AVATAR_API_BASE}/voices`, { method: 'GET' });
+        out.mooncalf.statusCode = r.status;
+        out.mooncalf.valid = r.ok;
+        if (!r.ok) {
+            const errText = await r.text().catch(() => '');
+            out.mooncalf.error = errText.slice(0, 400);
+        }
+    } catch (err) {
+        out.mooncalf.valid = false;
+        out.mooncalf.error = err.message || String(err);
+    }
+
+    res.json(out);
 });
 
 // ============================
@@ -255,15 +609,52 @@ app.post('/api/avatar/generate', async (req, res) => {
 // ============================
 app.get('/api/avatar/videos', requireAuth, async (req, res) => {
     try {
-        // Videos are uploaded as 'authenticated' type, so use Search API
-        const result = await cloudinary.search
-            .expression('folder:avatar_videos AND resource_type:video')
-            .sort_by('created_at', 'desc')
-            .max_results(100)
-            .execute();
+        // Primary: Admin API — returns newly-uploaded assets instantly (no
+        // indexing delay). Falls back to Search API if Admin API errors out.
+        const collected = [];
+        const seen = new Set();
 
-        const videos = (result.resources || []).map(v => {
-            // Generate a signed URL for authenticated videos
+        const pushResource = (v) => {
+            if (!v || !v.public_id || seen.has(v.public_id)) return;
+            seen.add(v.public_id);
+            collected.push(v);
+        };
+
+        // --- Primary: Admin API, paged by prefix ---
+        try {
+            let next_cursor;
+            do {
+                const page = await cloudinary.api.resources({
+                    resource_type: 'video',
+                    type: 'authenticated',
+                    prefix: 'avatar_videos/',
+                    max_results: 100,
+                    next_cursor
+                });
+                (page.resources || []).forEach(pushResource);
+                next_cursor = page.next_cursor;
+            } while (next_cursor && collected.length < 500);
+        } catch (adminErr) {
+            console.warn('[avatar/videos] Admin API failed, falling back to Search:', adminErr.message);
+        }
+
+        // --- Fallback / supplement: Search API (covers dynamic-folder accounts
+        //     where asset_folder is stored separately from public_id). ---
+        try {
+            const searchResult = await cloudinary.search
+                .expression('(folder:avatar_videos OR asset_folder:avatar_videos) AND resource_type:video')
+                .sort_by('created_at', 'desc')
+                .max_results(100)
+                .execute();
+            (searchResult.resources || []).forEach(pushResource);
+        } catch (searchErr) {
+            console.warn('[avatar/videos] Search API failed:', searchErr.message);
+        }
+
+        // Sort newest first
+        collected.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        const videos = collected.map(v => {
             const signedUrl = cloudinary.url(v.public_id, {
                 resource_type: 'video',
                 type: 'authenticated',
@@ -271,7 +662,6 @@ app.get('/api/avatar/videos', requireAuth, async (req, res) => {
                 secure: true,
                 format: v.format || 'mp4'
             });
-            // Generate a signed thumbnail
             const thumbUrl = cloudinary.url(v.public_id, {
                 resource_type: 'video',
                 type: 'authenticated',
@@ -286,7 +676,7 @@ app.get('/api/avatar/videos', requireAuth, async (req, res) => {
             return {
                 publicId: v.public_id,
                 url: signedUrl,
-                thumbUrl: thumbUrl,
+                thumbUrl,
                 filename: v.public_id.split('/').pop(),
                 format: v.format,
                 size: v.bytes,
@@ -297,7 +687,7 @@ app.get('/api/avatar/videos', requireAuth, async (req, res) => {
             };
         });
 
-        res.json({ success: true, videos });
+        res.json({ success: true, videos, total: videos.length });
     } catch (err) {
         console.error('Failed to fetch avatar videos:', err.message);
         res.status(500).json({ success: false, error: err.message });
@@ -1383,52 +1773,254 @@ app.get('/api/ice-token', requireAuth, async (req, res) => {
     }
 });
 
-// Voice Live - AI Chat (Google Gemini)
-app.post('/api/voice-chat', requireAuth, async (req, res) => {
-    const { messages, topic } = req.body;
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// ============================
+// AI Provider abstraction (Gemini + OpenAI / ChatGPT)
+// ============================
+// Provider is chosen by AI_PROVIDER env var ("gemini" | "openai"). Defaults to
+// "gemini" when GEMINI_API_KEY is set, otherwise "openai".
+// Each call accepts OpenAI-style `messages: [{role, content}]` so the two
+// backends are interchangeable.
 
-    if (!geminiKey) {
-        return res.status(500).json({ success: false, message: 'Google Gemini API not configured. Add GEMINI_API_KEY to .env' });
+function resolveAIProvider() {
+    const explicit = (process.env.AI_PROVIDER || '').toLowerCase().trim();
+    if (explicit === 'openai' || explicit === 'gemini') return explicit;
+    if (process.env.OPENAI_API_KEY) return 'openai';
+    return 'gemini';
+}
+
+// Grading can use a different backend than chat. Defaults to OpenAI when its
+// key is set (more reliable JSON), otherwise falls through to chat default.
+function resolveGradingProvider() {
+    const explicit = (process.env.AI_GRADING_PROVIDER || '').toLowerCase().trim();
+    if (explicit === 'openai' || explicit === 'gemini') return explicit;
+    if (process.env.OPENAI_API_KEY) return 'openai';
+    return resolveAIProvider();
+}
+
+function resolveModel(provider) {
+    if (provider === 'openai') return process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    return process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+}
+
+function resolveGradingModel(provider) {
+    if (process.env.AI_GRADING_MODEL) return process.env.AI_GRADING_MODEL;
+    return resolveModel(provider);
+}
+
+async function callGemini({ system, messages, maxTokens, temperature, jsonMode, jsonSchema, model: forcedModel }) {
+    const key = process.env.GEMINI_API_KEY;
+    const model = forcedModel || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+    if (!key) throw new Error('GEMINI_API_KEY not configured');
+
+    const contents = (messages || []).map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+    }));
+
+    const body = {
+        contents,
+        generationConfig: {
+            maxOutputTokens: maxTokens,
+            temperature
+        }
+    };
+    if (system) body.system_instruction = { parts: [{ text: system }] };
+    if (jsonMode || jsonSchema) body.generationConfig.responseMimeType = 'application/json';
+    if (jsonSchema) body.generationConfig.responseSchema = jsonSchema;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+    const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+        const errText = await r.text().catch(() => '');
+        throw new Error(`Gemini ${r.status}: ${errText.slice(0, 300)}`);
+    }
+    const data = await r.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function callOpenAI({ system, messages, maxTokens, temperature, jsonMode, jsonSchema, model: forcedModel }) {
+    const key = process.env.OPENAI_API_KEY;
+    const model = forcedModel || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const baseURL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    if (!key) throw new Error('OPENAI_API_KEY not configured');
+
+    const chatMessages = [];
+    if (system) chatMessages.push({ role: 'system', content: system });
+    for (const m of messages || []) {
+        chatMessages.push({
+            role: m.role === 'model' ? 'assistant' : (m.role || 'user'),
+            content: m.content
+        });
     }
 
+    const body = {
+        model,
+        messages: chatMessages,
+        temperature,
+        max_tokens: maxTokens
+    };
+    if (jsonSchema) {
+        body.response_format = {
+            type: 'json_schema',
+            json_schema: { name: jsonSchema.__name || 'Response', schema: jsonSchema, strict: false }
+        };
+    } else if (jsonMode) {
+        body.response_format = { type: 'json_object' };
+    }
+
+    const r = await fetch(`${baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`
+        },
+        body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+        const errText = await r.text().catch(() => '');
+        throw new Error(`OpenAI ${r.status}: ${errText.slice(0, 300)}`);
+    }
+    const data = await r.json();
+    return data.choices?.[0]?.message?.content || '';
+}
+
+async function aiChatComplete({
+    system,
+    messages,
+    maxTokens = 512,
+    temperature = 0.7,
+    jsonMode = false,
+    jsonSchema,
+    provider: forcedProvider,
+    model: forcedModel
+} = {}) {
+    const provider = (forcedProvider || resolveAIProvider()).toLowerCase();
+    const opts = { system, messages, maxTokens, temperature, jsonMode, jsonSchema, model: forcedModel };
+    if (provider === 'openai') return { provider, text: await callOpenAI(opts) };
+    return { provider, text: await callGemini(opts) };
+}
+
+// --- small utility helpers used by AI grading ----------------------------
+
+// Robust JSON extractor — tolerates markdown fences and trailing prose.
+function extractJSON(text) {
+    if (!text) return null;
+    let cleaned = String(text).replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+    try { return JSON.parse(cleaned); } catch { /* fallthrough */ }
+    const first = cleaned.indexOf('{');
+    const last = cleaned.lastIndexOf('}');
+    if (first !== -1 && last !== -1 && last > first) {
+        try { return JSON.parse(cleaned.slice(first, last + 1)); } catch { /* fallthrough */ }
+    }
+    return null;
+}
+
+// Clamp to [0, max] and round to nearest 0.5; NaN/garbage becomes 0.
+function clampScore(n, max) {
+    let v = Number(n);
+    if (!Number.isFinite(v)) return 0;
+    if (max > 0) v = Math.max(0, Math.min(max, v));
+    else v = Math.max(0, v);
+    return Math.round(v * 2) / 2;
+}
+
+// Run an array of async-returning task functions with a concurrency limit.
+async function runWithConcurrency(tasks, concurrency = 5) {
+    const results = new Array(tasks.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+        while (true) {
+            const i = cursor++;
+            if (i >= tasks.length) return;
+            try { results[i] = { status: 'fulfilled', value: await tasks[i]() }; }
+            catch (err) { results[i] = { status: 'rejected', reason: err }; }
+        }
+    });
+    await Promise.all(workers);
+    return results;
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Probe: which AI providers are available (based on env) and which is default.
+// Used by the frontend to show/hide provider options.
+app.get('/api/ai-providers', requireAuth, (req, res) => {
+    const hasGemini = !!process.env.GEMINI_API_KEY;
+    const hasOpenAI = !!process.env.OPENAI_API_KEY;
+    res.json({
+        success: true,
+        providers: {
+            gemini: {
+                available: hasGemini,
+                model: process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+            },
+            openai: {
+                available: hasOpenAI,
+                model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+            }
+        },
+        default: resolveAIProvider()
+    });
+});
+
+// Voice Live - AI Chat (provider-agnostic, language-aware)
+app.post('/api/voice-chat', requireAuth, async (req, res) => {
+    const { messages, topic, provider, language } = req.body || {};
+
+    const hasAnyKey = !!(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY);
+    if (!hasAnyKey) {
+        return res.status(500).json({
+            success: false,
+            message: 'No AI provider configured. Set GEMINI_API_KEY or OPENAI_API_KEY in .env'
+        });
+    }
+
+    // Validate/normalize inputs
+    const requestedProvider = (provider || '').toLowerCase();
+    const allowedProviders = new Set(['gemini', 'openai']);
+    const chosenProvider = allowedProviders.has(requestedProvider)
+        ? requestedProvider
+        : resolveAIProvider();
+
+    // Guard: don't try a provider whose key is missing
+    if (chosenProvider === 'openai' && !process.env.OPENAI_API_KEY) {
+        return res.status(400).json({ success: false, message: 'OpenAI is not configured on the server.' });
+    }
+    if (chosenProvider === 'gemini' && !process.env.GEMINI_API_KEY) {
+        return res.status(400).json({ success: false, message: 'Gemini is not configured on the server.' });
+    }
+
+    const lang = (language || '').toLowerCase();
+    const langLabel = lang === 'en' || lang === 'english' ? 'English'
+                    : lang === 'th' || lang === 'thai'    ? 'Thai'
+                    : 'Thai'; // default
+
     try {
-        const systemInstruction = topic
-            ? `You are a helpful medical education AI assistant. The current discussion topic is: "${topic}". Keep responses concise (2-3 sentences max) and conversational since this is a voice chat. Focus on the topic and provide accurate medical information. Always respond in Thai language.`
-            : `You are a helpful medical education AI assistant. Keep responses concise (2-3 sentences max) and conversational since this is a voice chat. Always respond in Thai language.`;
+        const base = `You are a helpful medical education AI assistant. Keep responses concise (2-3 sentences max) and conversational since this is a voice chat. Provide accurate medical information.`;
+        const topicClause = topic ? ` The current discussion topic is: "${topic}". Focus on the topic.` : '';
+        const languageClause = ` Always respond in ${langLabel} language.`;
+        const systemInstruction = base + topicClause + languageClause;
 
-        // Convert OpenAI-style messages to Gemini format
-        const contents = (messages || []).map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-        }));
-
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`;
-        const aiRes = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                system_instruction: { parts: [{ text: systemInstruction }] },
-                contents,
-                generationConfig: {
-                    maxOutputTokens: 300,
-                    temperature: 0.7
-                }
-            })
+        const { text: reply, provider: usedProvider } = await aiChatComplete({
+            provider: chosenProvider,
+            system: systemInstruction,
+            messages: messages || [],
+            maxTokens: 300,
+            temperature: 0.7
         });
 
-        if (!aiRes.ok) {
-            const errBody = await aiRes.text();
-            console.error('Gemini API error:', errBody);
-            throw new Error('Gemini API request failed');
-        }
-
-        const data = await aiRes.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Sorry, I could not generate a response.';
-        res.json({ success: true, reply });
+        res.json({
+            success: true,
+            reply: reply || 'Sorry, I could not generate a response.',
+            provider: usedProvider,
+            language: langLabel.toLowerCase()
+        });
     } catch (err) {
-        console.error('Voice chat error:', err);
+        console.error('Voice chat error:', err.message || err);
         res.status(500).json({ success: false, message: 'Failed to get AI response' });
     }
 });
@@ -1436,31 +2028,186 @@ app.post('/api/voice-chat', requireAuth, async (req, res) => {
 // ============================
 // AI Grading - Auto-grade student assessment answers using Gemini
 // ============================
+// JSON schema describing the structured grading output.
+// Used by both Gemini (responseSchema) and OpenAI (response_format.json_schema).
+const GRADING_JSON_SCHEMA = {
+    __name: 'AssessmentGrades',
+    type: 'object',
+    properties: {
+        grades: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    question: { type: 'integer' },
+                    score: { type: 'number' },
+                    feedback: { type: 'string' }
+                },
+                required: ['question', 'score', 'feedback']
+            }
+        }
+    },
+    required: ['grades']
+};
+
+function buildGradingPrompt({ assessmentName, qaPairs, marksPerQuestion, fullMarks }) {
+    const qaText = qaPairs.map((qa, i) => {
+        const answer = (qa.answers || []).map(s => (s || '').trim()).filter(Boolean).join(' ').trim();
+        let block = `Question ${i + 1}: ${qa.question}\nStudent's Answer: ${answer || '[NO ANSWER PROVIDED]'}`;
+        if (qa.correctAnswer) block += `\nCorrect Answer (Key Points): ${qa.correctAnswer}`;
+        return block;
+    }).join('\n\n');
+
+    return `You are an experienced, strict but fair assessment grader for a nursing education course.
+The assessment is: "${assessmentName}"
+Today's date: ${new Date().toISOString().split('T')[0]}
+
+Each question is worth up to ${marksPerQuestion} marks. The total full marks are ${fullMarks}.
+You may assign any score in increments of 0.5 between 0 and ${marksPerQuestion} inclusive.
+
+ANSWERS TO GRADE
+================
+${qaText}
+
+GRADING RULES (apply strictly in this order)
+============================================
+1. CORRECTNESS is the highest priority. When a "Correct Answer (Key Points)" is provided it is the primary rubric.
+2. If the student's answer is "[NO ANSWER PROVIDED]", empty, or only filler (e.g. "idk", "pass"), assign 0 and say so in feedback.
+3. A short answer that captures the key points MUST receive full marks. Do NOT reward length.
+4. A long answer containing factual errors loses marks in proportion to the errors, even if the rest is detailed.
+5. Off-topic answers receive 0 regardless of length or effort.
+6. Answers may be in Thai, English, or a mix — grade the meaning, not the language. Ignore minor grammar/spelling unless it makes the answer unclear or misleading.
+7. Medically unsafe or dangerous advice must be penalized heavily and flagged in feedback.
+8. If no "Correct Answer" is given, grade on medical accuracy and relevance.
+
+FEEDBACK FORMAT
+===============
+1–2 short sentences. Be specific about what was right, what was missing, and (if any) what was wrong. Use the same language the student used when possible.
+
+OUTPUT
+======
+Return ONLY valid JSON — no prose, no markdown fences — matching exactly:
+{"grades":[{"question":1,"score":0.5,"feedback":"..."}, ...]}
+Include one entry per question in the same order as above. Do NOT include a "totalScore" field — the server computes it.`;
+}
+
+async function gradeOneStudent({
+    username,
+    displayName,
+    qaPairs,
+    assessmentName,
+    marksPerQuestion,
+    fullMarks,
+    provider,
+    model,
+    maxAttempts = 3
+}) {
+    const prompt = buildGradingPrompt({ assessmentName, qaPairs, marksPerQuestion, fullMarks });
+    // Scale output budget with question count — roughly ~220 tokens per question + overhead.
+    const maxTokens = Math.max(1200, Math.ceil(220 * qaPairs.length + 400));
+
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const temperature = attempt === 1 ? 0.1 : 0; // get even more deterministic on retries
+            const reminder = attempt > 1
+                ? `\n\nREMINDER: Your previous response was not valid JSON. Return ONLY the JSON object described above, nothing else.`
+                : '';
+
+            const { text: raw } = await aiChatComplete({
+                provider,
+                model,
+                messages: [{ role: 'user', content: prompt + reminder }],
+                maxTokens,
+                temperature,
+                jsonSchema: GRADING_JSON_SCHEMA,
+                jsonMode: true
+            });
+
+            const parsed = extractJSON(raw);
+            if (!parsed || !Array.isArray(parsed.grades)) {
+                lastErr = new Error('Model did not return a grades array');
+                // Retry
+                await sleep(300 * attempt);
+                continue;
+            }
+
+            // Validate + clamp each grade, align by index to qaPairs length.
+            const grades = qaPairs.map((_, i) => {
+                const g = parsed.grades[i] || parsed.grades.find(x => Number(x?.question) === i + 1) || {};
+                return {
+                    question: i + 1,
+                    score: clampScore(g.score, marksPerQuestion),
+                    feedback: (typeof g.feedback === 'string' && g.feedback.trim()) ? g.feedback.trim().slice(0, 600) : 'No feedback provided.'
+                };
+            });
+
+            const totalScore = grades.reduce((s, g) => s + g.score, 0);
+            // Round total to nearest 0.5 as a final sanity pass (sum of 0.5s is already fine, but defensive).
+            const total = Math.round(totalScore * 2) / 2;
+
+            return {
+                username,
+                name: displayName,
+                totalScore: total,
+                grades,
+                attempts: attempt,
+                providerUsed: provider,
+                modelUsed: model
+            };
+        } catch (err) {
+            lastErr = err;
+            const transient = /5\d\d|ECONN|ETIMEDOUT|timeout/i.test(err.message || '');
+            await sleep(transient ? 500 * attempt : 200 * attempt);
+        }
+    }
+
+    return {
+        username,
+        name: displayName,
+        totalScore: null,
+        error: lastErr ? (lastErr.message || String(lastErr)) : 'Unknown grading error',
+        attempts: maxAttempts,
+        providerUsed: provider,
+        modelUsed: model
+    };
+}
+
 app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res) => {
     const assessmentId = req.params.assessmentId;
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+    const t0 = Date.now();
 
-    if (!geminiKey) {
-        return res.status(500).json({ success: false, error: 'Gemini API not configured' });
+    const hasAnyKey = !!(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY);
+    if (!hasAnyKey) {
+        return res.status(500).json({ success: false, error: 'No AI provider configured (set GEMINI_API_KEY or OPENAI_API_KEY)' });
     }
 
     try {
-        // Get assessment info
+        // Optional per-request overrides from the admin UI
+        const requestedProvider = (req.body?.provider || '').toLowerCase();
+        const requestedModel = (req.body?.model || '').trim();
+        let provider = requestedProvider === 'openai' || requestedProvider === 'gemini'
+            ? requestedProvider
+            : resolveGradingProvider();
+        // Guard: don't try a provider whose key is missing
+        if (provider === 'openai' && !process.env.OPENAI_API_KEY) provider = 'gemini';
+        if (provider === 'gemini' && !process.env.GEMINI_API_KEY) provider = 'openai';
+        const model = requestedModel || resolveGradingModel(provider);
+
         const assessmentsData = (await redisGetJson('assessments')) || { assessments: [] };
         const assessment = assessmentsData.assessments.find(a => a.id === assessmentId);
         if (!assessment) return res.status(404).json({ success: false, error: 'Assessment not found' });
 
         const assessmentVideos = assessment.videos || [];
         const fullMarks = assessment.fullMarks || null;
-        const totalQuestions = assessmentVideos.filter(v => v.question).length || 1;
+        const totalQuestions = Math.max(1, assessmentVideos.filter(v => v.question).length);
         const marksPerQuestion = fullMarks ? (fullMarks / totalQuestions) : 1;
 
-        // Get all users
         const usersData = (await redisGetJson('users')) || { users: [] };
         const marksData = (await redisGetJson(`assessment_marks:${assessmentId}`)) || {};
-        const results = [];
 
+        // First pass: collect grading inputs for each eligible student (still sequential I/O but cheap)
+        const gradingInputs = [];
         for (const user of usersData.users) {
             const username = (user.email || '').split('@')[0];
             if (!username) continue;
@@ -1471,7 +2218,6 @@ app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res
             const responseMessages = messages.filter(m => m.type === 'text' || m.type === 'voice');
             if (responseMessages.length === 0) continue;
 
-            // Group answers by question
             const sortedMsgs = messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
             const qaPairs = [];
             let currentQuestion = assessmentVideos[0]?.question || 'Assessment Question';
@@ -1490,94 +2236,73 @@ app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res
                     currentAnswers = [];
                     continue;
                 }
-                if (m.type === 'text') {
-                    currentAnswers.push(m.text);
-                } else if (m.type === 'voice' && m.transcript) {
-                    currentAnswers.push(m.transcript);
-                }
+                if (m.type === 'text') currentAnswers.push(m.text);
+                else if (m.type === 'voice' && m.transcript) currentAnswers.push(m.transcript);
             }
-            // Push last group
             if (currentAnswers.length > 0) {
                 qaPairs.push({ question: currentQuestion, correctAnswer: currentCorrectAnswer, answers: currentAnswers });
             }
-
             if (qaPairs.length === 0) continue;
 
-            // Build prompt for Gemini
-            const qaText = qaPairs.map((qa, i) => {
-                let block = `Question ${i + 1}: ${qa.question}\nStudent's Answer: ${qa.answers.join(' ')}`;
-                if (qa.correctAnswer) {
-                    block += `\nCorrect Answer (Key Points): ${qa.correctAnswer}`;
+            gradingInputs.push({ username, displayName: user.name || username, qaPairs });
+        }
+
+        if (gradingInputs.length === 0) {
+            return res.json({
+                success: true,
+                results: [],
+                summary: {
+                    total: 0, graded: 0, failed: 0,
+                    durationMs: Date.now() - t0, provider, model
                 }
-                return block;
-            }).join('\n\n');
+            });
+        }
 
-            const prompt = `You are a assessment grader. Grade the following student answers. Answers can be both thai and english.
-Today's date: ${new Date().toISOString().split('T')[0]}
+        // Second pass: grade in parallel with concurrency cap.
+        const concurrency = Math.min(8, Math.max(1, parseInt(process.env.AI_GRADING_CONCURRENCY, 10) || 5));
+        const tasks = gradingInputs.map(input => () => gradeOneStudent({
+            ...input,
+            assessmentName: assessment.name,
+            marksPerQuestion,
+            fullMarks: fullMarks || totalQuestions,
+            provider,
+            model
+        }));
 
-Assessment: ${assessment.name}
-Max marks per question: ${marksPerQuestion}
-Total full marks: ${fullMarks || totalQuestions}
+        const settled = await runWithConcurrency(tasks, concurrency);
 
-${qaText}
-
-For each question, assign a score from 0 to ${marksPerQuestion} (you can use increments of 0.5).
-
-GRADING RULES (follow carefully):
-
-1. CORRECTNESS is the HIGHEST priority. The correct answer / key points provided are the PRIMARY basis for grading.
-2. A short but completely correct answer MUST receive full marks. Do NOT reward length.
-3. A long answer with unnecessary details but partially incorrect content MUST lose marks. Penalize factual errors — even if the explanation is detailed, incorrect information must reduce the score.
-4. Clear, precise, and correct answers are preferred. Extra explanation is NOT required unless necessary for correctness.
-5. Ignore writing style unless it affects clarity. Minor grammar mistakes should NOT reduce marks — only reduce if the answer becomes unclear or misleading.
-6. If no correct answer is provided, grade based on general accuracy and relevance.
-
-FEEDBACK FORMAT: Give a brief reason (1-2 sentences maximum).
-
-IMPORTANT: Respond ONLY with valid JSON in this exact format, no extra text:
-{"grades": [{"question": 1, "score": 0.5, "feedback": "brief reason"}, ...], "totalScore": 1.5}`;
-
-            try {
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`;
-                const aiRes = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                        generationConfig: { maxOutputTokens: 1000, temperature: 0.3 }
-                    })
-                });
-
-                if (!aiRes.ok) throw new Error('Gemini API failed');
-
-                const aiData = await aiRes.json();
-                let reply = aiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-                // Parse JSON from reply (handle markdown code blocks)
-                reply = reply.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-                const gradeResult = JSON.parse(reply);
-
-                const totalScore = gradeResult.totalScore ?? gradeResult.grades.reduce((s, g) => s + g.score, 0);
-
-                // Save marks
-                marksData[username] = totalScore;
-
-                results.push({
-                    username,
-                    name: user.name || username,
-                    totalScore,
-                    grades: gradeResult.grades
-                });
-            } catch (aiErr) {
-                console.error(`AI grading failed for ${username}:`, aiErr.message);
-                results.push({ username, name: user.name || username, totalScore: null, error: aiErr.message });
+        const results = [];
+        for (const s of settled) {
+            if (s.status === 'fulfilled') {
+                const r = s.value;
+                results.push(r);
+                if (r.totalScore !== null && r.totalScore !== undefined) {
+                    marksData[r.username] = r.totalScore;
+                }
+            } else {
+                const err = s.reason || new Error('unknown');
+                results.push({ totalScore: null, error: err.message || String(err) });
             }
         }
 
-        // Save all marks to Redis
         await redisSetJson(`assessment_marks:${assessmentId}`, marksData);
 
-        res.json({ success: true, results });
+        const graded = results.filter(r => r.totalScore !== null && r.totalScore !== undefined).length;
+        const failed = results.length - graded;
+
+        res.json({
+            success: true,
+            results,
+            summary: {
+                total: results.length,
+                graded,
+                failed,
+                durationMs: Date.now() - t0,
+                provider,
+                model,
+                concurrency
+            }
+        });
     } catch (err) {
         console.error('AI grade error:', err.message);
         res.status(500).json({ success: false, error: err.message });
@@ -1598,6 +2323,10 @@ async function startServer() {
         const originsMsg = allowAnyOrigin
             ? 'any (*)'
             : (allowedOrigins.length ? allowedOrigins.join(', ') : 'reflect (dev)');
+        const aiProvider = resolveAIProvider();
+        const aiModel = resolveModel(aiProvider);
+        const gradingProvider = resolveGradingProvider();
+        const gradingModel = resolveGradingModel(gradingProvider);
         console.log(`
 ╔══════════════════════════════════════════════╗
 ║          MediHack Dashboard Server           ║
@@ -1608,6 +2337,10 @@ async function startServer() {
   CORS:       ${originsMsg}
   TrustProxy: ${app.get('trust proxy')}
   Secure cookies: ${IS_PROD ? 'on' : 'off'}
+  Sessions:   ${sessionStore ? 'redis' : 'memory (dev only)'}
+  AI chat:    ${aiProvider} (${aiModel})
+  AI grading: ${gradingProvider} (${gradingModel})
+  Avatar:     ${resolveAvatarProvider()}${resolveAvatarProvider() === 'auto' ? (isAzureAvatarConfigured() ? ' (azure → mooncalf)' : ' (mooncalf only)') : ''}
 ╚══════════════════════════════════════════════╝
         `);
     });
@@ -1615,7 +2348,11 @@ async function startServer() {
     // Graceful shutdown so PM2/Docker can restart cleanly
     const shutdown = (signal) => {
         console.log(`\n[${signal}] received — shutting down gracefully...`);
-        server.close(() => {
+        server.close(async () => {
+            try {
+                if (sessionRedisClient?.isOpen) await sessionRedisClient.quit();
+                if (redis?.isOpen) await redis.quit();
+            } catch (e) { /* ignore */ }
             console.log('HTTP server closed.');
             process.exit(0);
         });

@@ -904,14 +904,28 @@ async function aiGradeAssessment() {
     btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Grading...';
 
     try {
-        const res = await fetch(`/api/ai-grade-assessment/${currentResponsesAssessmentId}`, { method: 'POST' });
+        const res = await fetch(`/api/ai-grade-assessment/${currentResponsesAssessmentId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({})
+        });
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'Grading failed');
 
         const results = data.results || [];
+        const summary = data.summary || {};
         if (results.length === 0) {
             alert('No students to grade.');
             return;
+        }
+
+        // Log a concise summary for admins
+        const durSec = summary.durationMs ? (summary.durationMs / 1000).toFixed(1) : '?';
+        console.log(`[AI grading] ${summary.graded}/${summary.total} graded in ${durSec}s · ${summary.provider} (${summary.model}) · concurrency=${summary.concurrency}`);
+        if (summary.failed > 0) {
+            const failedNames = results.filter(r => r.error).map(r => `${r.name || r.username}: ${r.error}`).join('\n• ');
+            console.warn(`[AI grading] ${summary.failed} failed:\n• ${failedNames}`);
         }
 
         // Inject AI feedback into each student card
@@ -950,12 +964,30 @@ async function aiGradeAssessment() {
             card.classList.add('expanded');
         }
 
-        // Summary alert
-        const summaryLines = results.map(r => {
-            if (r.error) return `${r.name}: Failed`;
-            return `${r.name}: ${r.totalScore} marks`;
-        });
-        alert(`AI Grading Complete!\n\n${summaryLines.join('\n')}`);
+        // Mark failed students with a red badge so it's visible
+        for (const card of studentCards) {
+            const nameEl = card.querySelector('.fw-bold');
+            if (!nameEl) continue;
+            const studentName = nameEl.textContent.trim();
+            const result = results.find(r => (r.name || '').trim() === studentName);
+            if (!result || !result.error) continue;
+            const existingFail = nameEl.parentElement.querySelector('.ai-grade-failed');
+            if (existingFail) existingFail.remove();
+            const fail = document.createElement('span');
+            fail.className = 'badge bg-danger ai-grade-failed ms-2';
+            fail.title = result.error;
+            fail.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>Grading failed';
+            nameEl.parentElement.appendChild(fail);
+        }
+
+        // Summary
+        const header = summary.provider
+            ? `AI Grading Complete — ${summary.graded}/${summary.total} graded in ${(summary.durationMs / 1000).toFixed(1)}s using ${summary.provider} (${summary.model})`
+            : 'AI Grading Complete!';
+        const summaryLines = results.map(r => r.error
+            ? `${r.name || r.username}: Failed (${r.error})`
+            : `${r.name || r.username}: ${r.totalScore} marks`);
+        alert(`${header}\n\n${summaryLines.join('\n')}`);
     } catch (err) {
         console.error('AI grading error:', err);
         alert('AI grading failed: ' + err.message);
@@ -2866,6 +2898,9 @@ let voiceLiveState = {
     speechRegion: null,
     isSpeaking: false,
     voiceGender: 'boy', // 'boy' or 'girl'
+    aiProvider: 'gemini', // 'gemini' | 'openai'
+    language: 'th',       // 'th' | 'en'
+    providersAvailable: { gemini: true, openai: false },
     // Avatar state
     avatarMode: false,
     avatarSynthesizer: null,
@@ -2882,9 +2917,87 @@ function setVoiceGender(gender) {
     document.getElementById('voiceGenderGirl').classList.toggle('active', gender === 'girl');
 }
 
-function getSelectedVoiceName() {
-    return voiceLiveState.voiceGender === 'girl' ? 'th-TH-PremwadeeNeural' : 'th-TH-NiwatNeural';
+function setVoiceProvider(provider) {
+    const normalized = provider === 'openai' ? 'openai' : 'gemini';
+    // Prevent selecting an unavailable provider
+    if (!voiceLiveState.providersAvailable[normalized]) {
+        const hint = document.getElementById('voiceProviderHint');
+        if (hint) hint.textContent = `${normalized === 'openai' ? 'ChatGPT' : 'Gemini'} is not configured on the server`;
+        return;
+    }
+    voiceLiveState.aiProvider = normalized;
+    const g = document.getElementById('voiceProviderGemini');
+    const o = document.getElementById('voiceProviderOpenai');
+    if (g) g.classList.toggle('active', normalized === 'gemini');
+    if (o) o.classList.toggle('active', normalized === 'openai');
+    const hint = document.getElementById('voiceProviderHint');
+    if (hint) hint.textContent = normalized === 'openai' ? 'Using ChatGPT (OpenAI)' : 'Using Gemini (Google)';
 }
+
+function setVoiceLanguage(lang) {
+    const normalized = lang === 'en' ? 'en' : 'th';
+    voiceLiveState.language = normalized;
+    const th = document.getElementById('voiceLangTh');
+    const en = document.getElementById('voiceLangEn');
+    if (th) th.classList.toggle('active', normalized === 'th');
+    if (en) en.classList.toggle('active', normalized === 'en');
+
+    // If a recognition session is live, restart it so Azure STT uses the new locale.
+    if (voiceLiveState.isListening) {
+        stopVoiceListening();
+        setTimeout(() => startVoiceListening(), 300);
+    }
+}
+
+function getSelectedVoiceName() {
+    const lang = voiceLiveState.language || 'th';
+    const gender = voiceLiveState.voiceGender || 'boy';
+    if (lang === 'en') {
+        return gender === 'girl' ? 'en-US-JennyNeural' : 'en-US-GuyNeural';
+    }
+    return gender === 'girl' ? 'th-TH-PremwadeeNeural' : 'th-TH-NiwatNeural';
+}
+
+function getSpeechRecognitionLocale() {
+    return voiceLiveState.language === 'en' ? 'en-US' : 'th-TH';
+}
+
+async function loadAIProviders() {
+    try {
+        const res = await fetch('/api/ai-providers', { credentials: 'include' });
+        const data = await res.json();
+        if (!data || !data.providers) return;
+        voiceLiveState.providersAvailable = {
+            gemini: !!data.providers.gemini?.available,
+            openai: !!data.providers.openai?.available
+        };
+
+        // Disable buttons for unavailable providers
+        const g = document.getElementById('voiceProviderGemini');
+        const o = document.getElementById('voiceProviderOpenai');
+        if (g) {
+            g.disabled = !voiceLiveState.providersAvailable.gemini;
+            g.title = voiceLiveState.providersAvailable.gemini ? '' : 'GEMINI_API_KEY not set on server';
+        }
+        if (o) {
+            o.disabled = !voiceLiveState.providersAvailable.openai;
+            o.title = voiceLiveState.providersAvailable.openai ? '' : 'OPENAI_API_KEY not set on server';
+        }
+
+        // Default selection: prefer server default if available, else first available
+        let initial = (data.default || 'gemini').toLowerCase();
+        if (!voiceLiveState.providersAvailable[initial]) {
+            initial = voiceLiveState.providersAvailable.gemini ? 'gemini'
+                    : voiceLiveState.providersAvailable.openai ? 'openai'
+                    : initial;
+        }
+        setVoiceProvider(initial);
+    } catch (err) {
+        console.warn('Failed to load AI providers:', err);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => { loadAIProviders(); });
 
 async function getAzureSpeechToken() {
     try {
@@ -2981,7 +3094,7 @@ async function toggleVoiceLive() {
             voiceLiveState.speechToken,
             voiceLiveState.speechRegion
         );
-        speechConfig.speechRecognitionLanguage = 'th-TH';
+        speechConfig.speechRecognitionLanguage = getSpeechRecognitionLocale();
 
         const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
         voiceLiveState.recognizer = new SpeechSDK.SpeechRecognizer(speechConfig, audioConfig);
@@ -3111,9 +3224,12 @@ async function getAIResponseAndSpeak(userText) {
         const res = await fetch('/api/voice-chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({
                 messages: voiceLiveState.messages,
-                topic: voiceLiveState.topic
+                topic: voiceLiveState.topic,
+                provider: voiceLiveState.aiProvider,
+                language: voiceLiveState.language
             })
         });
         const data = await res.json();

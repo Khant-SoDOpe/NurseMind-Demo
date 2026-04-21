@@ -767,6 +767,36 @@
                             </button>
                         </div>
 
+                        <!-- AI Model & Language -->
+                        <div class="voice-topic-card mb-3">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold small mb-1">AI Model</label>
+                                    <div class="d-flex gap-2 flex-wrap">
+                                        <button class="btn btn-outline-primary voice-gender-btn active" id="voiceProviderGemini" onclick="setVoiceProvider('gemini')" type="button">
+                                            <i class="fas fa-bolt me-1"></i>Gemini
+                                        </button>
+                                        <button class="btn btn-outline-primary voice-gender-btn" id="voiceProviderOpenai" onclick="setVoiceProvider('openai')" type="button">
+                                            <i class="fas fa-robot me-1"></i>ChatGPT
+                                        </button>
+                                    </div>
+                                    <small class="text-muted d-block mt-1" id="voiceProviderHint">Choose which LLM answers</small>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold small mb-1">Language</label>
+                                    <div class="d-flex gap-2 flex-wrap">
+                                        <button class="btn btn-outline-primary voice-gender-btn active" id="voiceLangTh" onclick="setVoiceLanguage('th')" type="button">
+                                            <i class="fas fa-language me-1"></i>ภาษาไทย
+                                        </button>
+                                        <button class="btn btn-outline-primary voice-gender-btn" id="voiceLangEn" onclick="setVoiceLanguage('en')" type="button">
+                                            <i class="fas fa-language me-1"></i>English
+                                        </button>
+                                    </div>
+                                    <small class="text-muted d-block mt-1">Speech input + AI reply language</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Voice Gender Selection -->
                         <div class="voice-topic-card mb-3">
                             <label class="form-label fw-semibold">AI Voice</label>
