@@ -1434,7 +1434,7 @@ app.post('/api/ai-grade-assessment/:assessmentId', requireAdmin, async (req, res
                 return block;
             }).join('\n\n');
 
-            const prompt = `You are a strict assessment grader. Grade the following student answers. Answers can be both thai and english.
+            const prompt = `You are a assessment grader. Grade the following student answers. Answers can be both thai and english.
 Today's date: ${new Date().toISOString().split('T')[0]}
 
 Assessment: ${assessment.name}
@@ -1445,7 +1445,7 @@ ${qaText}
 
 For each question, assign a score from 0 to ${marksPerQuestion} (you can use increments of 0.5).
 
-GRADING RULES (follow strictly):
+GRADING RULES (follow carefully):
 
 1. CORRECTNESS is the HIGHEST priority. The correct answer / key points provided are the PRIMARY basis for grading.
 2. A short but completely correct answer MUST receive full marks. Do NOT reward length.
