@@ -1,0 +1,29 @@
+# Production-ready compose file for a VPS.
+# Expose only to localhost (127.0.0.1) and terminate TLS with nginx on the host,
+# OR remove the 127.0.0.1 prefix if you want the container reachable on all interfaces.
+services:
+  app:
+    build: .
+    image: nurse-assessment:latest
+    container_name: nurse-assessment
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4000
+      TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

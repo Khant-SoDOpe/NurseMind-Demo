@@ -3,6 +3,9 @@ const express = require('express');
 const path = require('path');
 const multer = require('multer');
 const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
@@ -10,9 +13,24 @@ const { v2: cloudinary } = require('cloudinary');
 const { createClient } = require('redis');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_PROD = NODE_ENV === 'production';
 const REDIS_URL = process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'medihack-dashboard-secret-change-this-in-production';
+
+if (IS_PROD && SESSION_SECRET === 'medihack-dashboard-secret-change-this-in-production') {
+    console.warn('[WARN] Running in production with the default SESSION_SECRET. Set SESSION_SECRET in your environment!');
+}
+
+// Parse ALLOWED_ORIGINS: comma-separated list of exact origins, or "*" for any.
+// Example: ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+const rawAllowedOrigins = (process.env.ALLOWED_ORIGINS || '').trim();
+const allowAnyOrigin = rawAllowedOrigins === '*';
+const allowedOrigins = rawAllowedOrigins && !allowAnyOrigin
+    ? rawAllowedOrigins.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
 
 // Configure Cloudinary
 cloudinary.config({
@@ -21,24 +39,84 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Middleware
-app.use(cors({
-    origin: true,
-    credentials: true
+// Behind nginx/Caddy/Cloudflare/etc. Needed so secure cookies + rate-limit work.
+// Set TRUST_PROXY=1 (or a hop count, or "true") when deploying behind a proxy.
+const trustProxySetting = process.env.TRUST_PROXY;
+if (trustProxySetting !== undefined && trustProxySetting !== '') {
+    const n = Number(trustProxySetting);
+    app.set('trust proxy', Number.isFinite(n) ? n : trustProxySetting);
+} else if (IS_PROD) {
+    app.set('trust proxy', 1);
+}
+
+// Security headers. CSP disabled because index.html uses inline styles/scripts.
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
+
+// Gzip responses
+app.use(compression());
+
+// Middleware
+const corsOptions = {
+    origin: (origin, callback) => {
+        // Same-origin / curl / server-to-server (no Origin header) — always allow.
+        if (!origin) return callback(null, true);
+        if (allowAnyOrigin) return callback(null, true);
+        if (allowedOrigins.length === 0) {
+            // No list configured => reflect origin (dev-friendly default).
+            return callback(null, true);
+        }
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 app.use(cookieParser());
 app.use(session({
     secret: SESSION_SECRET,
+    name: 'nurse.sid',
     resave: false,
     saveUninitialized: false,
+    proxy: IS_PROD,
     cookie: {
-        secure: false, // Set to true in production with HTTPS
+        secure: IS_PROD,                       // HTTPS-only cookies in production
         httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        sameSite: IS_PROD ? 'lax' : 'lax',     // 'none' needed only for cross-site cookies
+        maxAge: 24 * 60 * 60 * 1000            // 24h
     }
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Basic rate limiting — auth endpoints are the most sensitive.
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many auth attempts, please try again later.' }
+});
+app.use('/auth/login', authLimiter);
+app.use('/auth/register', authLimiter);
+app.use('/auth/forgot-password', authLimiter);
+app.use('/auth/reset-password', authLimiter);
+
+// General API rate limit (generous; tune to taste)
+const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false
+});
+app.use('/api/', apiLimiter);
 
 // Authentication middleware
 function requireAuth(req, res, next) {
@@ -1515,27 +1593,40 @@ app.use(express.static('.'));
 async function startServer() {
     await initRedis();
 
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, HOST, () => {
+        const shownHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
+        const originsMsg = allowAnyOrigin
+            ? 'any (*)'
+            : (allowedOrigins.length ? allowedOrigins.join(', ') : 'reflect (dev)');
         console.log(`
 ╔══════════════════════════════════════════════╗
 ║          MediHack Dashboard Server           ║
-║                                              ║
-║  Server running at: http://localhost:${PORT}   ║
-║  Dashboard URL: http://localhost:${PORT}/index.html ║
-║                                              ║
-║  API Endpoints:                              ║
-║  • GET  /api/avatar/voices                   ║
-║  • GET  /api/avatar/models                   ║
-║  • POST /api/avatar/generate                 ║
-║  • GET  /api/avatar/videos                   ║
-║  • CRUD /api/assessments                     ║
-║  • POST /api/assessment-recordings/upload    ║
-║  • GET  /api/assessment-recordings/status/all║
-║                                              ║
-║  Press Ctrl+C to stop the server            ║
+╠══════════════════════════════════════════════╣
+  Env:        ${NODE_ENV}
+  Listening:  http://${HOST}:${PORT}
+  Dashboard:  http://${shownHost}:${PORT}/index.html
+  CORS:       ${originsMsg}
+  TrustProxy: ${app.get('trust proxy')}
+  Secure cookies: ${IS_PROD ? 'on' : 'off'}
 ╚══════════════════════════════════════════════╝
         `);
     });
+
+    // Graceful shutdown so PM2/Docker can restart cleanly
+    const shutdown = (signal) => {
+        console.log(`\n[${signal}] received — shutting down gracefully...`);
+        server.close(() => {
+            console.log('HTTP server closed.');
+            process.exit(0);
+        });
+        // Force-exit after 10s
+        setTimeout(() => process.exit(1), 10000).unref();
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-startServer().catch(console.error);
+startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+});
